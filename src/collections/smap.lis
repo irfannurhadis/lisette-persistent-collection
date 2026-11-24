@@ -66,13 +66,14 @@ pub fn sassoc<V>(m: SMap<V>, k: string, v: V) -> SMap<V> {
             let mut out = new_snode<V>()
             out.kids = slices.Clone(r.*.kids)
             out.bucket = r.*.bucket
-            insert_at(&out, k, v, h, 0)
-            SMap { n: m.n + 1, root: Some(&out) }
+            let replaced = insert_at(&out, k, v, h, 0)
+            let new_n = if replaced { m.n } else { m.n + 1 }
+            SMap { n: new_n, root: Some(&out) }
         },
     )
 }
 
-fn insert_at<V>(node: mut Ref<SNode<V>>, k: string, v: V, h: uint64, shift: int) {
+fn insert_at<V>(node: mut Ref<SNode<V>>, k: string, v: V, h: uint64, shift: int) -> bool {
     // Replace or append in this node's bucket if hash collides at this prefix.
     let mut found = false
     let mut bucket = Slice.new<(string, V)>()
@@ -80,22 +81,30 @@ fn insert_at<V>(node: mut Ref<SNode<V>>, k: string, v: V, h: uint64, shift: int)
         if key == k { bucket = bucket.append((k, v)); found = true }
         else { bucket = bucket.append((key, old)) }
     }
-    if found { node.bucket = bucket; return }
+    if found { node.bucket = bucket; return true }
+    // Hash exhausted (or depth cap reached): keep in this node's collision
+    // bucket rather than recursing forever with a wrapped shift.
+    if shift >= 60 {
+        node.bucket = bucket.append((k, v))
+        return false
+    }
     let idx = ((h >> shift) & SMASK as uint64) as int
-    match node.*.kids[idx] {
-        Some(child) => {
-            let mut next = new_snode<V>()
-            next.kids = slices.Clone(child.*.kids)
-            next.bucket = child.*.bucket
-            insert_at(&next, k, v, h, shift + 5)
-            node.kids[idx] = Some(&next)
-        },
-        None => {
+    node.*.kids[idx].map_or_else(
+        || {
             let mut leaf = new_snode<V>()
             leaf.bucket = leaf.bucket.append((k, v))
             node.kids[idx] = Some(&leaf)
+            false
         },
-    }
+        |child| {
+            let mut next = new_snode<V>()
+            next.kids = slices.Clone(child.*.kids)
+            next.bucket = child.*.bucket
+            let replaced = insert_at(&next, k, v, h, shift + 5)
+            node.kids[idx] = Some(&next)
+            replaced
+        },
+    )
 }
 
 pub fn scount<V>(m: SMap<V>) -> int { m.n }
@@ -128,16 +137,22 @@ pub fn from_entries<V>(entries: Slice<(string, V)>) -> SMap<V> {
 // and lists consumes string-keyed maps. Keys are gathered via reduce_kv and
 // transformed inline; result is the only allocated slice.
 pub fn transduce_keys<V>(m: SMap<V>, stages: Slice<Stage<string>>, zero: int, f: fn(int, string) -> int) -> int {
-    reduce_kv(m, zero, |acc: int, k: string, _v: V| {
-        let mut st = fresh_state()
+    // Gather keys in one traversal (reduce_kv), then run ONE fused reducer loop
+    // with shared state: take(n) is a global limit and Stop ends the loop.
+    let keys = reduce_kv(m, Slice.new<string>(), |acc: Slice<string>, k: string, _v: V| acc.append(k))
+    let mut acc = zero
+    let mut st = fresh_state()
+    for k in keys {
+        if st.stopped { break }
         let mut value: Option<string> = Some(k)
         for stage in stages {
             if value.is_none() { break }
             let (next, emitted, flag) = stage.apply(st, value_of(value))
             st = next
             value = emitted
-            if flag == Reduced.Stop { break }
+            if flag == Reduced.Stop { st = RState { stopped: true, ..st }; break }
         }
-        if !value.is_none() { f(acc, value_of(value)) } else { acc }
-    })
+        if !value.is_none() { acc = f(acc, value_of(value)) }
+    }
+    acc
 }

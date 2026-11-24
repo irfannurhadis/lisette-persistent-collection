@@ -42,7 +42,7 @@ Files in `src/collections/`:
 - Set algebra
 - Map transforms
 
-## v0.1.2 fixes (engineering review)
+## v0.1.3 fixes (engineering review)
 
 - `HashMap` is now a real HAMT: FNV-1a hash over `fmt.Sprint(key)`, 5-bit
   partitions, 32-way children, path-copying assoc/dissoc, hash-based get,
@@ -53,7 +53,11 @@ Files in `src/collections/`:
 - `list_count` is iterative; no stack growth on long lists.
 - `take(n)` now signals `Reduced.Stop` on the nth element itself (no extra
   upstream pull — observable for effectful stages).
-- Regression suite: 27 tests, including large HAMT, vector height boundaries,
+- `SMap.sassoc` no longer inflates `n` on replacement; hash-exhaustion depth cap
+  keeps collisions in the node bucket instead of recursing past 64 bits.
+- `transduce_keys` shares reducer state across all keys: `take(n)` is a global
+  limit and `Stop` ends traversal.
+- Regression suite: 30 tests, including large HAMT, vector height boundaries,
   version independence, take semantics, 5000-element list.
 
 ## Publishing / consuming

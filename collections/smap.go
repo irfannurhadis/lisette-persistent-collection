@@ -83,15 +83,21 @@ func Sassoc[V any](m SMap[V], k string, v V) SMap[V] {
 		out := newSnode[V]()
 		out.Kids = slices.Clone(r.Kids)
 		out.Bucket = r.Bucket
-		insertAt(&out, k, v, h, 0)
+		replaced := insertAt(&out, k, v, h, 0)
+		var newN int
+		if replaced {
+			newN = m.N
+		} else {
+			newN = m.N + 1
+		}
 		return SMap[V]{
-			N:    m.N + 1,
+			N:    newN,
 			Root: lisette.MakeOptionSome(&out),
 		}
 	})
 }
 
-func insertAt[V any](node *SNode[V], k string, v V, h uint64, shift int) {
+func insertAt[V any](node *SNode[V], k string, v V, h uint64, shift int) bool {
 	found := false
 	bucket := []lisette.Tuple2[string, V]{}
 	for _, item := range node.Bucket {
@@ -106,22 +112,26 @@ func insertAt[V any](node *SNode[V], k string, v V, h uint64, shift int) {
 	}
 	if found {
 		node.Bucket = bucket
-		return
+		return true
+	}
+	if shift >= 60 {
+		node.Bucket = append(slices.Clip(bucket), lisette.MakeTuple2[string, V](k, v))
+		return false
 	}
 	idx := int(h >> shift & uint64(Smask))
-	subject := node.Kids[idx]
-	if subject.Tag == lisette.OptionSome {
-		child := subject.SomeVal
-		next := newSnode[V]()
-		next.Kids = slices.Clone(child.Kids)
-		next.Bucket = child.Bucket
-		insertAt(&next, k, v, h, shift+5)
-		node.Kids[idx] = lisette.MakeOptionSome(&next)
-	} else {
+	return lisette.OptionMapOrElse(node.Kids[idx], func() bool {
 		leaf := newSnode[V]()
 		leaf.Bucket = append(leaf.Bucket, lisette.MakeTuple2[string, V](k, v))
 		node.Kids[idx] = lisette.MakeOptionSome(&leaf)
-	}
+		return false
+	}, func(child *SNode[V]) bool {
+		next := newSnode[V]()
+		next.Kids = slices.Clone(child.Kids)
+		next.Bucket = child.Bucket
+		replaced := insertAt(&next, k, v, h, shift+5)
+		node.Kids[idx] = lisette.MakeOptionSome(&next)
+		return replaced
+	})
 }
 
 func Scount[V any](m SMap[V]) int {
@@ -158,8 +168,15 @@ func FromEntries[V any](entries []lisette.Tuple2[string, V]) SMap[V] {
 }
 
 func TransduceKeys[V any](m SMap[V], stages []Stage[string], zero int, f func(int, string) int) int {
-	return ReduceKv(m, zero, func(acc int, k string, _ V) int {
-		st := FreshState()
+	keys := ReduceKv(m, []string{}, func(acc []string, k string, _ V) []string {
+		return append(slices.Clip(acc), k)
+	})
+	acc := zero
+	st := FreshState()
+	for _, k := range keys {
+		if st.Stopped {
+			break
+		}
 		value := lisette.MakeOptionSome(k)
 		for _, stage := range stages {
 			if value.IsNone() {
@@ -172,12 +189,15 @@ func TransduceKeys[V any](m SMap[V], stages []Stage[string], zero int, f func(in
 			st = next
 			value = emitted
 			if flag == MakeReducedStop() {
+				copy2 := st
+				copy2.Stopped = true
+				st = copy2
 				break
 			}
 		}
 		if !value.IsNone() {
-			return f(acc, valueOf(value))
+			acc = f(acc, valueOf(value))
 		}
-		return acc
-	})
+	}
+	return acc
 }

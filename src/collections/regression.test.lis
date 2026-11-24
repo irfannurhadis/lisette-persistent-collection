@@ -69,3 +69,32 @@ fn list_count_iterative_long() {
     for i in 0..5000 { xs = cons(i, xs) }
     assert list_count(xs) == 5000
 }
+
+#[test]
+fn smap_replace_does_not_inflate_count() {
+    let mut m = empty_smap<int>()
+    m = sassoc(m, "a", 1)
+    m = sassoc(m, "a", 2)
+    assert scount(m) == 1
+    assert sget(m, "a") == Some(2)
+}
+
+#[test]
+fn smap_take_stage_is_global_limit() {
+    let mut m = empty_smap<int>()
+    for i in 0..100 { m = sassoc(m, f"k{i}", i) }
+    let stages = [Stage { apply: |st: RState, k: string| (st, Some(k), Reduced.Continue) }]
+    let pipeline = compose(take(3), Pipeline { stages })
+    // transduce_keys is int->int; use a counting f and a global take pipeline.
+    let seen = transduce_keys(m, pipeline.stages, 0, |acc: int, _k: string| acc + 1)
+    assert seen == 3
+}
+
+#[test]
+fn vector_height_transition_32768() {
+    let mut v = empty_vector<int>()
+    for i in 0..32769 { v = vconj(v, i) }
+    assert vnth(v, 32767) == Some(32767)
+    assert vnth(v, 32768) == Some(32768)
+    assert vnth(v, 32769) == None
+}
