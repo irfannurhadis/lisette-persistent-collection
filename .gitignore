@@ -1,5 +1,6 @@
 # Commit the emitted Go library (target/*.go + go.mod) so `lis add` works.
 # Ignore only compiler-local caches.
-target/.lisette/
+target/
+# Root go.mod + collections/ are the published Go module.
 *.tmp
 .DS_Store

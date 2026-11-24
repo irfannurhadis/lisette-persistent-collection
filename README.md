@@ -46,7 +46,7 @@ Files in `src/collections/`:
 
 This is a **Lisette library project** (no `main.lis`). `lisette.toml` `name` is
 the Go module path `github.com/irfannurhadis/lisette-persistent-collection`.
-`lis build` emits the Go module into `target/` (committed here), so consumers
+The Go module (`go.mod`, `go.sum`, `collections/`) lives at the repo root so Go can import it directly; `lis build` also emits it into `target/`, so consumers
 can add it with:
 
 ```sh
