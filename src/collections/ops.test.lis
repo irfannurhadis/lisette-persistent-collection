@@ -1,0 +1,54 @@
+import "go:strings"
+
+// Set algebra and map transformations over the persistent structures.
+
+#[test]
+fn set_union_intersection_difference() {
+    let mut a = empty_set<int>()
+    a = sconj(a, 1); a = sconj(a, 2)
+    let mut b = empty_set<int>()
+    b = sconj(b, 2); b = sconj(b, 3)
+    let u = sunion(a, b)
+    assert scontains(u, 1) && scontains(u, 2) && scontains(u, 3)
+    let i = sintersection(a, b)
+    assert scontains(i, 2) && !scontains(i, 1) && !scontains(i, 3)
+    let d = sdifference(a, b)
+    assert scontains(d, 1) && !scontains(d, 2)
+}
+
+#[test]
+fn map_merge_is_functional() {
+    let mut a = empty_map<string, int>()
+    a = massoc(a, "a", 1)
+    let mut b = empty_map<string, int>()
+    b = massoc(b, "a", 9); b = massoc(b, "b", 2)
+    let m = mmerge(a, b)
+    assert mget(m, "a") == Some(9)
+    assert mget(m, "b") == Some(2)
+    assert mget(a, "a") == Some(1)  // originals unchanged
+}
+
+#[test]
+fn map_key_value_transforms() {
+    let mut m = empty_map<string, int>()
+    m = massoc(m, "a", 1); m = massoc(m, "bb", 2)
+    let upper = map_keys(m, strings.ToUpper)
+    assert mget(upper, "A") == Some(1)
+    let doubled = map_values(m, |v: int| v * 2)
+    assert mget(doubled, "a") == Some(2)
+    let short = filter_keys(m, |k: string| k.length() == 1)
+    assert mget(short, "a") == Some(1)
+    assert mget(short, "bb") == None
+    let big = filter_values(m, |v: int| v > 1)
+    assert mget(big, "bb") == Some(2)
+    assert mget(big, "a") == None
+}
+
+#[test]
+fn smap_reduce_kv_and_transduce() {
+    let mut m = empty_smap<int>()
+    m = sassoc(m, "a", 1); m = sassoc(m, "b", 2)
+    assert reduce_kv(m, 0, |acc: int, _k: string, v: int| acc + v) == 3
+    let stages = [Stage { apply: |st: RState, k: string| (st, Some(k), Reduced.Continue) }]
+    assert transduce_keys(m, stages, 0, |acc: int, _k: string| acc + 1) == 2
+}

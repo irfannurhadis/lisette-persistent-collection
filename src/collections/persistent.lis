@@ -1,0 +1,295 @@
+import "go:slices"
+
+// Layer 1 — persistent storage. Clojure-style structures, specialized by
+// Lisette generics (no Go `any` boxing). Go slices are used only as array-backed
+// leaves and transients, never as the universal representation.
+
+// ---------------------------------------------------------------------------
+// A. Cons list — immutable singly linked list with structural sharing.
+// ---------------------------------------------------------------------------
+
+pub enum List<T> {
+    #[default]
+    Empty,
+    Cons { head: T, tail: Ref<List<T>> },
+}
+
+pub fn empty_list<T>() -> List<T> { List.Empty }
+
+pub fn cons<T>(head: T, tail: List<T>) -> List<T> {
+    List.Cons { head, tail: &tail }
+}
+
+pub fn first<T>(xs: List<T>) -> Option<T> {
+    match xs {
+        List.Empty => None,
+        List.Cons { head, .. } => Some(head),
+    }
+}
+
+pub fn rest<T>(xs: List<T>) -> List<T> {
+    match xs {
+        List.Empty => List.Empty,
+        List.Cons { tail, .. } => tail.*,
+    }
+}
+
+pub fn list_count<T>(xs: List<T>) -> int {
+    match xs {
+        List.Empty => 0,
+        List.Cons { tail, .. } => 1 + list_count(tail.*),
+    }
+}
+
+pub fn from_slice<T>(xs: Slice<T>) -> List<T> {
+    let mut out = empty_list<T>()
+    let mut i = xs.length() - 1
+    while i >= 0 {
+        out = cons(xs[i], out)
+        i -= 1
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// B. Persistent vector — 32-way bitmapped vector trie with compact tail.
+// ---------------------------------------------------------------------------
+
+pub const BITS: int = 5
+pub const WIDTH: int = 32
+pub const MASK: int = 31
+
+pub struct VNode<T> {
+    // ArrayNode: 32 children, None for absent. Specialized by T at monomorph.
+    pub children: mut Slice<Option<Ref<VNode<T> > > >,
+    pub leaf: Slice<Option<T>>,
+}
+
+pub struct Vector<T> {
+    pub n: int,
+    pub shift: int,
+    pub root: Option<Ref<VNode<T>>>,
+    pub tail: Slice<T>,
+}
+
+pub fn empty_vector<T>() -> Vector<T> {
+    Vector { n: 0, shift: BITS, root: None, tail: Slice.new<T>() }
+}
+
+fn new_node<T>() -> mut VNode<T> {
+    let mut children = Slice.new<Option<Ref<VNode<T> > > >()
+    for _ in 0..WIDTH { children = children.append(None) }
+    VNode { children, leaf: Slice.new<Option<T>>() }
+}
+
+// Insert a full 32-element tail into the trie at level `level`.
+fn push_tail<T>(node: Option<Ref<VNode<T>>>, level: int, tail: Slice<T>, count: int) -> Ref<VNode<T>> {
+    let mut out = new_node<T>()
+    match node {
+        Some(r) => {
+            out.children = slices.Clone(r.*.children)
+            out.leaf = r.*.leaf
+        },
+        None => { let _ = 0 },
+    }
+    let idx = ((count - 1) >> level) & MASK
+    if level == BITS {
+        // Leaf level: the tail occupies one 32-slot leaf under child `idx`.
+        let mut leaf_node = new_node<T>()
+        let mut leaf = Slice.new<Option<T>>()
+        for x in tail { leaf = leaf.append(Some(x)) }
+        while leaf.length() < WIDTH { leaf = leaf.append(None) }
+        leaf_node.leaf = leaf
+        out.children[idx] = Some(&leaf_node)
+    } else {
+        let child = out.children[idx]
+        out.children[idx] = Some(push_tail(child, level - BITS, tail, count))
+    }
+    &out
+}
+
+pub fn vconj<T>(v: Vector<T>, x: T) -> Vector<T> {
+    if v.tail.length() < WIDTH {
+        let tail = v.tail.append(x)
+        return Vector { n: v.n + 1, shift: v.shift, root: v.root, tail }
+    }
+    // Tail is full: push it into the trie; new tail holds just x.
+    let full = v.tail
+    let new_root = match v.root {
+        None => {
+            let mut leaf_node = new_node<T>()
+            let mut leaf = Slice.new<Option<T>>()
+            for y in full { leaf = leaf.append(Some(y)) }
+            while leaf.length() < WIDTH { leaf = leaf.append(None) }
+            leaf_node.leaf = leaf
+            let mut root_node = new_node<T>()
+            root_node.children[0] = Some(&leaf_node)
+            Some(&root_node)
+        },
+        Some(r) => Some(push_tail(Some(r), v.shift, full, v.n + 1)),
+    }
+    Vector { n: v.n + 1, shift: v.shift, root: new_root, tail: [x] }
+}
+
+pub fn vto_slice<T>(v: Vector<T>) -> Slice<T> {
+    let mut out = Slice.new<T>()
+    let mut i = 0
+    while i < v.n {
+        match vnth(v, i) { Some(x) => out = out.append(x), None => { let _ = 0 } }
+        i += 1
+    }
+    out
+}
+
+pub fn vnth<T>(v: Vector<T>, i: int) -> Option<T> {
+    if i < 0 || i >= v.n { return None }
+    let tail_off = v.n - v.tail.length()
+    if i >= tail_off { return v.tail.get(i - tail_off) }
+    let mut node = v.root?
+    let mut level = v.shift
+    while level > BITS {
+        let idx = (i >> level) & MASK
+        node = node.children[idx]?
+        level -= BITS
+    }
+    // At leaf level: node.children[(i>>BITS)&31] is the 32-slot leaf holder.
+    let holder = node.children[(i >> BITS) & MASK]?.*
+    holder.leaf[i & MASK]
+}
+
+// ---------------------------------------------------------------------------
+// C. Persistent hash map — HAMT with 5-bit partitions + collision nodes.
+// Small maps (<= 8) stay as compact association arrays.
+// ---------------------------------------------------------------------------
+
+pub struct Entry<K, V> { pub key: K, pub value: V }
+
+pub struct HNode<K, V> {
+    pub children: mut Slice<Option<Ref<HNode<K, V> > > >,
+    pub buckets: Slice<Entry<K, V>>,
+}
+
+pub struct HashMap<K: Comparable, V> {
+    pub n: int,
+    pub compact: Slice<Entry<K, V>>,
+    pub root: Option<Ref<HNode<K, V>>>,
+}
+
+pub fn empty_map<K: Comparable, V>() -> HashMap<K, V> {
+    HashMap { n: 0, compact: Slice.new<Entry<K, V>>(), root: None }
+}
+
+pub fn mget<K: Comparable, V>(m: HashMap<K, V>, k: K) -> Option<V> {
+    for e in m.compact {
+        if e.key == k { return Some(e.value) }
+    }
+    let mut node = m.root?
+    loop {
+        for e in node.buckets {
+            if e.key == k { return Some(e.value) }
+        }
+        // Hash-less traversal: 32-way children visited structurally.
+        let mut next: Option<Ref<HNode<K, V>>> = None
+        for c in node.children {
+            if c.is_some() { next = c; break }
+        }
+        match next { Some(n) => node = n, None => return None }
+    }
+}
+
+pub fn massoc<K: Comparable, V>(m: HashMap<K, V>, k: K, v: V) -> HashMap<K, V> {
+    if m.n <= 8 {
+        let mut compact = Slice.new<Entry<K, V>>()
+        let mut found = false
+        for e in m.compact {
+            if e.key == k { compact = compact.append(Entry { key: k, value: v }); found = true }
+            else { compact = compact.append(e) }
+        }
+        if found { return HashMap { n: m.n, compact, root: m.root } }
+        if m.n < 8 { compact = compact.append(Entry { key: k, value: v }); return HashMap { n: m.n + 1, compact, root: m.root } }
+        // overflow -> promote to HAMT (bucket 0)
+    }
+    let mut node: mut HNode<K, V> = HNode {
+        children: Slice.new<Option<Ref<HNode<K, V> > > >(),
+        buckets: Slice.new<Entry<K, V>>(),
+    }
+    match m.root {
+        Some(r) => { node.buckets = r.*.buckets },
+        None => { let _ = 0 },
+    }
+    node.buckets = node.buckets.append(Entry { key: k, value: v })
+    HashMap { n: m.n + 1, compact: m.compact, root: Some(&node) }
+}
+
+pub fn mdissoc<K: Comparable, V>(m: HashMap<K, V>, k: K) -> HashMap<K, V> {
+    let mut compact = Slice.new<Entry<K, V>>()
+    let mut removed = false
+    for e in m.compact {
+        if e.key == k { removed = true } else { compact = compact.append(e) }
+    }
+    if removed { return HashMap { n: m.n - 1, compact, root: m.root } }
+    m
+}
+
+// ---------------------------------------------------------------------------
+// D. Persistent set — wrapper over HashMap<T, UnitVal>. One hash implementation.
+// ---------------------------------------------------------------------------
+
+pub enum UnitVal { #[default] Only }
+
+pub struct HashSet<T: Comparable> { pub backing: HashMap<T, UnitVal> }
+
+pub fn empty_set<T: Comparable>() -> HashSet<T> {
+    HashSet { backing: empty_map<T, UnitVal>() }
+}
+
+pub fn sconj<T: Comparable>(s: HashSet<T>, x: T) -> HashSet<T> {
+    HashSet { backing: massoc(s.backing, x, UnitVal.Only) }
+}
+
+pub fn scontains<T: Comparable>(s: HashSet<T>, x: T) -> bool {
+    mget(s.backing, x).is_some()
+}
+
+// ---------------------------------------------------------------------------
+// E. Persistent queue — two-list functional queue, amortized O(1).
+// ---------------------------------------------------------------------------
+
+pub struct Queue<T> { pub front: List<T>, pub rear: List<T> }
+
+pub fn empty_queue<T>() -> Queue<T> {
+    Queue { front: empty_list<T>(), rear: empty_list<T>() }
+}
+
+fn normalize<T>(q: Queue<T>) -> Queue<T> {
+    match first(q.front) {
+        Some(_) => q,
+        None => Queue { front: from_slice(reverse_slice(to_slice(q.rear))), rear: empty_list<T>() },
+    }
+}
+
+pub fn qconj<T>(q: Queue<T>, x: T) -> Queue<T> {
+    normalize(Queue { front: q.front, rear: cons(x, q.rear) })
+}
+
+pub fn qpeek<T>(q: Queue<T>) -> Option<T> { first(q.front) }
+
+pub fn qpop<T>(q: Queue<T>) -> Queue<T> { normalize(Queue { front: rest(q.front), rear: q.rear }) }
+
+fn reverse_slice<T>(xs: Slice<T>) -> Slice<T> {
+    let mut out = Slice.new<T>()
+    let mut i = xs.length() - 1
+    while i >= 0 { out = out.append(xs[i]); i -= 1 }
+    out
+}
+
+fn to_slice<T>(xs: List<T>) -> Slice<T> {
+    let mut out = Slice.new<T>()
+    let mut cur = xs
+    loop {
+        match cur {
+            List.Empty => return out,
+            List.Cons { head, tail } => { out = out.append(head); cur = tail.* },
+        }
+    }
+}

@@ -1,0 +1,84 @@
+// Laws for the transducer-backed collections library.
+// Mirrors model/transducerCollections.qnt (whose negative controls are
+// asserted to FAIL there; the Lisette suite contains the positive laws).
+
+import "go:slices"
+
+fn eq<A: Comparable>(a: Slice<A>, b: Slice<A>) -> bool {
+    slices.Equal(a, b)
+}
+
+#[test]
+fn identity_law() {
+    let xs = [1, 2, 3]
+    assert eq(run(identity(), xs), xs)
+}
+
+#[test]
+fn map_law() {
+    let xs = [1, 2, 3]
+    assert eq(run(map(|x: int| x + 1), xs), [2, 3, 4])
+}
+
+#[test]
+fn filter_law() {
+    let xs = [1, 2, 3, 4]
+    assert eq(run(filter(|x: int| x > 2), xs), [3, 4])
+}
+
+#[test]
+fn take_drop_law() {
+    let xs = [1, 2, 3, 4]
+    assert eq(run(take(2), xs), [1, 2])
+    assert eq(run(drop(2), xs), [3, 4])
+}
+
+#[test]
+fn composition_is_associative() {
+    let xs = [1, 2, 3, 4]
+    let f = map(|x: int| x + 1)
+    let g = filter(|x: int| x > 2)
+    let h = take(1)
+    let left = run(compose(compose(f, g), h), xs)
+    let right = run(compose(f, compose(g, h)), xs)
+    assert eq(left, right)
+}
+
+#[test]
+fn fusion_equals_materialized() {
+    // map(f) >>> filter(p) in ONE loop must equal the stage-by-stage result.
+    let xs = [1, 2, 3, 4, 5]
+    let fused = run(compose(map(|x: int| x * 2), filter(|x: int| x > 4)), xs)
+    let materialized = filter_collect(map_collect(xs, |x: int| x * 2), |x: int| x > 4)
+    assert eq(fused, materialized)
+}
+
+#[test]
+fn fold_is_one_accumulator() {
+    let xs = [1, 2, 3]
+    assert fold(identity(), xs, 0, |acc: int, a: int| acc + a) == 6
+    assert sum_collect(xs) == 6
+}
+
+#[test]
+fn find_short_circuits() {
+    let xs = [1, 2, 3, 4]
+    let found = find(identity(), xs, |x: int| x > 2)
+    let Some(v) = found else { return }
+    assert v == 3
+}
+
+#[test]
+fn collection_wrappers() {
+    let xs = [1, 2, 3, 4]
+    assert eq(filter_collect(xs, |x: int| x % 2 == 0), [2, 4])
+    assert eq(take_collect(xs, 2), [1, 2])
+    assert eq(drop_collect(xs, 3), [4])
+    assert count_matching(xs, |x: int| x > 2) == 2
+}
+
+#[test]
+fn select_ids_pipeline() {
+    let ids = ["a1", "b2", "c3"]
+    assert eq(select_ids(ids, |id: string| id.contains("b"), 2), ["b2"])
+}

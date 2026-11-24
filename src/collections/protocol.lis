@@ -1,0 +1,210 @@
+// Layer 2 + 3 — Collection protocol and API, using Lisette interfaces.
+//
+// Structural satisfaction: each persistent structure implements Collection<T>
+// by providing count/empty/conj/reduce. A transducer is a stage pipeline
+// (transducer.lis); `transduce` applies it through the collection's own
+// reduce — no intermediate collection, no per-element boxing at the API.
+//
+// Caveat from the Lisette docs: interfaces box when used as a generic type
+// ARGUMENT (Slice<Coll<T>>), but method dispatch on a value is fine. We keep
+// the hot loops generic on the concrete type; the interface is the public
+// uniform surface, not the inner loop representation.
+
+// ---------------------------------------------------------------------------
+// Layer 3 API — the uniform collection surface.
+// ---------------------------------------------------------------------------
+
+pub interface Collection<T> {
+    fn count() -> int
+    fn empty() -> bool
+    fn reduce(zero: T, f: fn(T, T) -> T) -> T
+}
+
+// Map-specific key-value reduction (no tuple sequence built).
+pub interface KvCollection<K: Comparable, V> {
+    fn reduce_kv(zero: V, f: fn(V, K, V) -> V) -> V
+}
+
+// ---------------------------------------------------------------------------
+// Impls on the five Layer-1 structures. Traversal stays with the collection.
+// ---------------------------------------------------------------------------
+
+impl<T> List<T> {
+    fn count(self) -> int { list_count(self) }
+    fn empty(self) -> bool { match self { List.Empty => true, _ => false } }
+    fn reduce(self, zero: T, f: fn(T, T) -> T) -> T {
+        let mut acc = zero
+        let mut cur = self
+        loop {
+            match cur {
+                List.Empty => break,
+                List.Cons { head, tail } => { acc = f(acc, head); cur = tail.* },
+            }
+        }
+        acc
+    }
+}
+
+impl<T> Vector<T> {
+    fn count(self) -> int { self.n }
+    fn empty(self) -> bool { self.n == 0 }
+    fn reduce(self, zero: T, f: fn(T, T) -> T) -> T {
+        // Indexed trie traversal; no intermediate slice.
+        let mut acc = zero
+        let mut i = 0
+        while i < self.n {
+            match vnth(self, i) { Some(x) => acc = f(acc, x), None => { let _ = 0 } }
+            i += 1
+        }
+        acc
+    }
+}
+
+impl<K: Comparable, V> HashMap<K, V> {
+    fn count(self) -> int { self.n }
+    fn empty(self) -> bool { self.n == 0 }
+    fn reduce_kv(self, zero: V, f: fn(V, K, V) -> V) -> V {
+        let mut acc = zero
+        for e in self.compact { acc = f(acc, e.key, e.value) }
+        acc
+    }
+    // Values-only reduction for the Collection surface.
+    fn reduce(self, zero: V, f: fn(V, V) -> V) -> V {
+        let mut acc = zero
+        for e in self.compact { acc = f(acc, e.value) }
+        acc
+    }
+}
+
+impl<K: Comparable> HashSet<K> {
+    fn count(self) -> int { self.backing.n }
+    fn empty(self) -> bool { self.backing.n == 0 }
+    fn reduce(self, zero: K, f: fn(K, K) -> K) -> K {
+        let mut acc = zero
+        for e in self.backing.compact { acc = f(acc, e.key) }
+        acc
+    }
+}
+
+impl<T> Queue<T> {
+    fn count(self) -> int { list_count(self.front) + list_count(self.rear) }
+    fn empty(self) -> bool { first(self.front).is_none() }
+    fn reduce(self, zero: T, f: fn(T, T) -> T) -> T {
+        let mut acc = zero
+        let mut cur = self.front
+        loop {
+            match cur {
+                List.Empty => break,
+                List.Cons { head, tail } => { acc = f(acc, head); cur = tail.* },
+            }
+        }
+        acc
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Layer 3 — transduce: one reducer loop over any collection's traversal.
+// Stages (Stage<A> from transducer.lis) are applied inline; no intermediate.
+// ---------------------------------------------------------------------------
+
+pub fn transduce_vec<A, R>(v: Vector<A>, stages: Slice<Stage<A>>, zero: R, f: fn(R, A) -> R) -> R {
+    let mut acc = zero
+    let mut st = fresh_state()
+    let mut i = 0
+    while i < v.n {
+        if st.stopped { break }
+        let mut value: Option<A> = vnth(v, i)
+        for stage in stages {
+            if value.is_none() { break }
+            let (next, emitted, flag) = stage.apply(st, value_of(value))
+            st = next
+            value = emitted
+            if flag == Reduced.Stop { st = RState { stopped: true, ..st }; break }
+        }
+        if !value.is_none() { acc = f(acc, value_of(value)) }
+        i += 1
+    }
+    acc
+}
+
+pub fn transduce_list<A, R>(xs: List<A>, stages: Slice<Stage<A>>, zero: R, f: fn(R, A) -> R) -> R {
+    let mut acc = zero
+    let mut st = fresh_state()
+    let mut cur = xs
+    loop {
+        match cur {
+            List.Empty => break,
+            List.Cons { head, tail } => {
+                if st.stopped { break }
+                let mut value: Option<A> = Some(head)
+                for stage in stages {
+                    if value.is_none() { break }
+                    let (next, emitted, flag) = stage.apply(st, value_of(value))
+                    st = next
+                    value = emitted
+                    if flag == Reduced.Stop { st = RState { stopped: true, ..st }; break }
+                }
+                if !value.is_none() { acc = f(acc, value_of(value)) }
+                cur = tail.*
+            },
+        }
+    }
+    acc
+}
+
+pub fn transduce_map_keys<K: Comparable, R>(m: HashMap<K, R>, stages: Slice<Stage<K>>, zero: R, f: fn(R, K) -> R) -> R {
+    // reduce-kv: traverse entries directly, no tuple sequence allocation.
+    let mut acc = zero
+    let mut st = fresh_state()
+    for e in m.compact {
+        if st.stopped { break }
+        let mut value: Option<K> = Some(e.key)
+        for stage in stages {
+            if value.is_none() { break }
+            let (next, emitted, flag) = stage.apply(st, value_of(value))
+            st = next
+            value = emitted
+            if flag == Reduced.Stop { st = RState { stopped: true, ..st }; break }
+        }
+        if !value.is_none() { acc = f(acc, value_of(value)) }
+    }
+    acc
+}
+
+pub fn transduce_set<K: Comparable, R>(s: HashSet<K>, stages: Slice<Stage<K>>, zero: R, f: fn(R, K) -> R) -> R {
+    // Set reuses the map's backing entries; no second hash implementation.
+    let mut acc = zero
+    let mut st = fresh_state()
+    for e in s.backing.compact {
+        if st.stopped { break }
+        let mut value: Option<K> = Some(e.key)
+        for stage in stages {
+            if value.is_none() { break }
+            let (next, emitted, flag) = stage.apply(st, value_of(value))
+            st = next
+            value = emitted
+            if flag == Reduced.Stop { st = RState { stopped: true, ..st }; break }
+        }
+        if !value.is_none() { acc = f(acc, value_of(value)) }
+    }
+    acc
+}
+
+// into: materialize a pipeline result into a fresh vector (one result slice).
+pub fn into<A>(stages: Slice<Stage<A>>, xs: Slice<A>) -> Vector<A> {
+    let mut v = empty_vector<A>()
+    let mut st = fresh_state()
+    for a in xs {
+        if st.stopped { break }
+        let mut value: Option<A> = Some(a)
+        for stage in stages {
+            if value.is_none() { break }
+            let (next, emitted, flag) = stage.apply(st, value_of(value))
+            st = next
+            value = emitted
+            if flag == Reduced.Stop { st = RState { stopped: true, ..st }; break }
+        }
+        if !value.is_none() { v = vconj(v, value_of(value)) }
+    }
+    v
+}

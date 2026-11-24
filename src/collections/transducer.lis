@@ -1,0 +1,194 @@
+// Transducer-backed collections — zero-cost fused sequence pipelines.
+//
+// Encoding follows Data/Transducer.hs and model/transducerCollections.qnt:
+// stages transform a reducer, so map(f) >>> filter(p) >>> take(n) becomes ONE
+// loop over ONE shared state cell. No intermediate Slice per stage.
+//
+// Lisette has no rank-2 `forall r` in a type alias, so the reducer state is
+// concrete (RState) and stages are homogeneous on the element type. This keeps
+// the fusion property and every wrapper allocation-free. Generic map that
+// changes element type is provided separately (map_collect) — one loop, one
+// output slice, still no intermediate.
+
+// ---------------------------------------------------------------------------
+// Consumer substrate
+// ---------------------------------------------------------------------------
+
+pub enum Reduced {
+    #[default]
+    Continue,
+    Stop,
+}
+
+pub struct RState {
+    pub cursor: int,
+    pub taken: int,
+    pub stopped: bool,
+}
+
+pub fn fresh_state() -> RState {
+    RState { .. }
+}
+
+fn value_of<A>(v: Option<A>) -> A {
+    let Some(x) = v else { panic("transducer: absent value") }
+    x
+}
+
+// A stage consumes one element and may emit a transformed one. Pure: it only
+// reads/writes the shared reducer state; it never allocates a collection.
+pub struct Stage<A> {
+    pub apply: fn(RState, A) -> (RState, Option<A>, Reduced),
+}
+
+// A pipeline is an ordered stack of stages. compose = concatenation, so
+// identity and associativity hold definitionally (category laws).
+pub struct Pipeline<A> {
+    pub stages: Slice<Stage<A>>,
+}
+
+pub fn identity<A>() -> Pipeline<A> {
+    Pipeline {
+        stages: [Stage {
+            apply: |st: RState, a: A| (st, Some(a), Reduced.Continue),
+        }],
+    }
+}
+
+pub fn map<A>(f: fn(A) -> A) -> Pipeline<A> {
+    Pipeline {
+        stages: [Stage {
+            apply: |st: RState, a: A| (st, Some(f(a)), Reduced.Continue),
+        }],
+    }
+}
+
+pub fn filter<A>(p: fn(A) -> bool) -> Pipeline<A> {
+    Pipeline {
+        stages: [Stage {
+            apply: |st: RState, a: A| {
+                if p(a) { (st, Some(a), Reduced.Continue) }
+                else { (st, None, Reduced.Continue) }
+            },
+        }],
+    }
+}
+
+pub fn take<A>(n: int) -> Pipeline<A> {
+    Pipeline {
+        stages: [Stage {
+            apply: |st: RState, a: A| {
+                if st.taken >= n { (RState { stopped: true, ..st }, None, Reduced.Stop) }
+                else { (RState { taken: st.taken + 1, ..st }, Some(a), Reduced.Continue) }
+            },
+        }],
+    }
+}
+
+pub fn drop<A>(n: int) -> Pipeline<A> {
+    Pipeline {
+        stages: [Stage {
+            apply: |st: RState, a: A| {
+                if st.cursor < n { (RState { cursor: st.cursor + 1, ..st }, None, Reduced.Continue) }
+                else { (st, Some(a), Reduced.Continue) }
+            },
+        }],
+    }
+}
+
+pub fn compose<A>(first: Pipeline<A>, second: Pipeline<A>) -> Pipeline<A> {
+    let mut stages = Slice.new<Stage<A>>()
+    for s in first.stages { stages = stages.append(s) }
+    for s in second.stages { stages = stages.append(s) }
+    Pipeline { stages }
+}
+
+// ---------------------------------------------------------------------------
+// The single reducer loop — every consumer below is a thin projection of it.
+// ---------------------------------------------------------------------------
+
+fn reduce<A, R>(stages: Slice<Stage<A>>, xs: Slice<A>, zero: R, step: fn(R, A) -> R) -> R {
+    let mut acc = zero
+    let mut state = fresh_state()
+    for a in xs {
+        if state.stopped { break }
+        let mut value: Option<A> = Some(a)
+        for stage in stages {
+            if value.is_none() { break }
+            let (next_state, emitted, flag) = stage.apply(state, value_of(value))
+            state = next_state
+            value = emitted
+            if flag == Reduced.Stop {
+                state = RState { stopped: true, ..state }
+                break
+            }
+        }
+        if !value.is_none() { acc = step(acc, value_of(value)) }
+    }
+    acc
+}
+
+pub fn run<A>(pipeline: Pipeline<A>, xs: Slice<A>) -> Slice<A> {
+    reduce(pipeline.stages, xs, Slice.new<A>(), |acc: Slice<A>, a: A| acc.append(a))
+}
+
+pub fn fold<A, R>(pipeline: Pipeline<A>, xs: Slice<A>, zero: R, f: fn(R, A) -> R) -> R {
+    reduce(pipeline.stages, xs, zero, f)
+}
+
+pub fn find<A>(pipeline: Pipeline<A>, xs: Slice<A>, p: fn(A) -> bool) -> Option<A> {
+    let mut state = fresh_state()
+    for a in xs {
+        if state.stopped { break }
+        let mut value: Option<A> = Some(a)
+        for stage in pipeline.stages {
+            if value.is_none() { break }
+            let (next_state, emitted, flag) = stage.apply(state, value_of(value))
+            state = next_state
+            value = emitted
+            if flag == Reduced.Stop {
+                state = RState { stopped: true, ..state }
+                break
+            }
+        }
+        if !value.is_none() && p(value_of(value)) { return value }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Collections on top — all thin, allocation-free wrappers (except the one
+// result slice). No stage ever builds an intermediate slice.
+// ---------------------------------------------------------------------------
+
+// Generic map changes the element type; still ONE loop, ONE output slice.
+pub fn map_collect<A, B>(xs: Slice<A>, f: fn(A) -> B) -> Slice<B> {
+    let mut out = Slice.new<B>()
+    for a in xs { out = out.append(f(a)) }
+    out
+}
+
+pub fn filter_collect<A>(xs: Slice<A>, p: fn(A) -> bool) -> Slice<A> {
+    run(filter(p), xs)
+}
+
+pub fn take_collect<A>(xs: Slice<A>, n: int) -> Slice<A> {
+    run(take(n), xs)
+}
+
+pub fn drop_collect<A>(xs: Slice<A>, n: int) -> Slice<A> {
+    run(drop(n), xs)
+}
+
+pub fn sum_collect(xs: Slice<int>) -> int {
+    fold(identity(), xs, 0, |acc: int, a: int| acc + a)
+}
+
+// N3-shaped helpers: card IDs and SRS-like pairs flow through the same core.
+pub fn select_ids(ids: Slice<string>, keep: fn(string) -> bool, limit: int) -> Slice<string> {
+    run(compose(filter(keep), take(limit)), ids)
+}
+
+pub fn count_matching<A>(xs: Slice<A>, p: fn(A) -> bool) -> int {
+    fold(filter(p), xs, 0, |acc: int, _a: A| acc + 1)
+}

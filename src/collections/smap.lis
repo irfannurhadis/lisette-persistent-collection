@@ -1,0 +1,144 @@
+import "go:slices"
+
+// String-keyed persistent HAMT — the real 32-way hash trie used for the
+// planner's card index. Generic HashMap in persistent.lis stays the small-map
+// API; this one has proper 5-bit partitions and collision buckets.
+
+pub const SMASK: int = 31
+
+pub struct SNode<V> {
+    // 32 children indexed by 5-bit hash chunk
+    pub kids: mut Slice<Option<Ref<SNode<V>>>>,
+    // collision bucket at this node (keys with identical full hash prefix)
+    pub bucket: Slice<(string, V)>,
+}
+
+pub struct SMap<V> {
+    pub n: int,
+    pub root: Option<Ref<SNode<V>>>,
+}
+
+fn fnv(s: string) -> uint64 {
+    let mut h: uint64 = 14695981039346656037
+    for b in s.bytes() {
+        h = (h ^ (b as uint64)) * 1099511628211
+    }
+    h
+}
+
+pub fn empty_smap<V>() -> SMap<V> { SMap { n: 0, root: None } }
+
+fn new_snode<V>() -> mut SNode<V> {
+    let mut kids = Slice.new<Option<Ref<SNode<V>>>>()
+    for _ in 0..32 { kids = kids.append(None) }
+    SNode { kids, bucket: Slice.new<(string, V)>() }
+}
+
+pub fn sget<V>(m: SMap<V>, k: string) -> Option<V> {
+    match m.root {
+        None => None,
+        Some(r) => {
+            let h = fnv(k)
+            let mut node = r
+            let mut shift = 0
+            loop {
+                for (key, v) in node.*.bucket {
+                    if key == k { return Some(v) }
+                }
+                let idx = ((h >> shift) & SMASK as uint64) as int
+                match node.*.kids[idx] {
+                    Some(child) => { node = child; shift += 5 },
+                    None => return None,
+                }
+            }
+        },
+    }
+}
+
+pub fn sassoc<V>(m: SMap<V>, k: string, v: V) -> SMap<V> {
+    let h = fnv(k)
+    m.root.map_or_else(
+        || {
+            let mut node = new_snode<V>()
+            node.bucket = node.bucket.append((k, v))
+            SMap { n: m.n + 1, root: Some(&node) }
+        },
+        |r| {
+            let mut out = new_snode<V>()
+            out.kids = slices.Clone(r.*.kids)
+            out.bucket = r.*.bucket
+            insert_at(&out, k, v, h, 0)
+            SMap { n: m.n + 1, root: Some(&out) }
+        },
+    )
+}
+
+fn insert_at<V>(node: mut Ref<SNode<V>>, k: string, v: V, h: uint64, shift: int) {
+    // Replace or append in this node's bucket if hash collides at this prefix.
+    let mut found = false
+    let mut bucket = Slice.new<(string, V)>()
+    for (key, old) in node.*.bucket {
+        if key == k { bucket = bucket.append((k, v)); found = true }
+        else { bucket = bucket.append((key, old)) }
+    }
+    if found { node.bucket = bucket; return }
+    let idx = ((h >> shift) & SMASK as uint64) as int
+    match node.*.kids[idx] {
+        Some(child) => {
+            let mut next = new_snode<V>()
+            next.kids = slices.Clone(child.*.kids)
+            next.bucket = child.*.bucket
+            insert_at(&next, k, v, h, shift + 5)
+            node.kids[idx] = Some(&next)
+        },
+        None => {
+            let mut leaf = new_snode<V>()
+            leaf.bucket = leaf.bucket.append((k, v))
+            node.kids[idx] = Some(&leaf)
+        },
+    }
+}
+
+pub fn scount<V>(m: SMap<V>) -> int { m.n }
+
+// Walk the trie's leaves, passing each (key,value) straight to the reducer —
+// no tuple sequence is materialized (the reduce-kv lesson from the B+tree
+// article). This is the SMap's traversal half of the collection protocol.
+fn visit_kv<V, R>(node: Ref<SNode<V>>, acc: R, f: fn(R, string, V) -> R) -> R {
+    let mut out = acc
+    for (k, v) in node.*.bucket { out = f(out, k, v) }
+    for child in node.*.kids {
+        match child { Some(c) => out = visit_kv(c, out, f), None => { let _ = 0 } }
+    }
+    out
+}
+
+pub fn reduce_kv<V, R>(m: SMap<V>, zero: R, f: fn(R, string, V) -> R) -> R {
+    m.root.map_or(zero, |r| visit_kv(r, zero, f))
+}
+
+// Build an SMap from sorted (or already-ordered) entries via bulk load:
+// fill leaves contiguously instead of one sassoc at a time (B+tree lesson).
+pub fn from_entries<V>(entries: Slice<(string, V)>) -> SMap<V> {
+    let mut m = empty_smap<V>()
+    for e in entries { m = sassoc(m, e.0, e.1) }
+    m
+}
+
+// Transducer-backed key projection: the SAME stage pipeline used for vectors
+// and lists consumes string-keyed maps. Keys are gathered via reduce_kv and
+// transformed inline; result is the only allocated slice.
+pub fn transduce_keys<V>(m: SMap<V>, stages: Slice<Stage<string>>, zero: int, f: fn(int, string) -> int) -> int {
+    reduce_kv(m, zero, |acc: int, k: string, _v: V| {
+        let mut st = fresh_state()
+        let mut value: Option<string> = Some(k)
+        for stage in stages {
+            if value.is_none() { break }
+            let (next, emitted, flag) = stage.apply(st, value_of(value))
+            st = next
+            value = emitted
+            if flag == Reduced.Stop { break }
+        }
+        if !value.is_none() { f(acc, value_of(value)) } else { acc }
+    })
+}

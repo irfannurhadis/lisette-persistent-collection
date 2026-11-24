@@ -1,0 +1,68 @@
+// Layer 3 collection APIs built on the persistent structures + transducers.
+// All operations are functional (return new collections) and allocate only
+// the result structure — no intermediate slices between stages.
+
+import "go:slices"
+
+// --- Set algebra (reuses the map's hashing/persistence) --------------------
+
+pub fn sunion<K: Comparable>(a: HashSet<K>, b: HashSet<K>) -> HashSet<K> {
+    let mut out = a
+    for e in b.backing.compact { out = sconj(out, e.key) }
+    out
+}
+
+pub fn sintersection<K: Comparable>(a: HashSet<K>, b: HashSet<K>) -> HashSet<K> {
+    let mut out = empty_set<K>()
+    for e in a.backing.compact {
+        if scontains(b, e.key) { out = sconj(out, e.key) }
+    }
+    out
+}
+
+pub fn sdifference<K: Comparable>(a: HashSet<K>, b: HashSet<K>) -> HashSet<K> {
+    let mut out = empty_set<K>()
+    for e in a.backing.compact {
+        if !scontains(b, e.key) { out = sconj(out, e.key) }
+    }
+    out
+}
+
+// --- Map merge: traverse the smaller map, assoc into the larger one --------
+
+// Clojure `merge` semantics: the right-hand map wins. We traverse `b`
+// (the incoming map) and assoc into `a`, preserving a's structure where b
+// has no key (structural sharing on a's side).
+pub fn mmerge<K: Comparable, V>(a: HashMap<K, V>, b: HashMap<K, V>) -> HashMap<K, V> {
+    let mut out = a
+    for e in b.compact { out = massoc(out, e.key, e.value) }
+    out
+}
+
+// --- Map key/value transformation via transducers (reduce-kv) -------------
+
+pub fn map_keys<K: Comparable, V>(m: HashMap<K, V>, f: fn(K) -> K) -> HashMap<K, V> {
+    let mut out = empty_map<K, V>()
+    for e in m.compact { out = massoc(out, f(e.key), e.value) }
+    out
+}
+
+pub fn map_values<K: Comparable, V>(m: HashMap<K, V>, f: fn(V) -> V) -> HashMap<K, V> {
+    let mut out = empty_map<K, V>()
+    for e in m.compact { out = massoc(out, e.key, f(e.value)) }
+    out
+}
+
+pub fn filter_keys<K: Comparable, V>(m: HashMap<K, V>, p: fn(K) -> bool) -> HashMap<K, V> {
+    let mut out = empty_map<K, V>()
+    for e in m.compact { if p(e.key) { out = massoc(out, e.key, e.value) } }
+    out
+}
+
+pub fn filter_values<K: Comparable, V>(m: HashMap<K, V>, p: fn(V) -> bool) -> HashMap<K, V> {
+    let mut out = empty_map<K, V>()
+    for e in m.compact { if p(e.value) { out = massoc(out, e.key, e.value) } }
+    out
+}
+
+pub fn eq_slice<A: Comparable>(a: Slice<A>, b: Slice<A>) -> bool { slices.Equal(a, b) }

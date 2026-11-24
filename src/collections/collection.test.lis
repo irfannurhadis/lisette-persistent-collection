@@ -1,0 +1,105 @@
+// Layer 1+2+3 laws: persistent structures + interface protocol + transducers.
+
+// The interface is the uniform surface; these functions accept ANY structure
+// implementing Collection<T> (structural satisfaction, no explicit decl).
+fn total_of<A>(c: Collection<A>, zero: A, f: fn(A, A) -> A) -> A {
+    c.reduce(zero, f)
+}
+
+#[test]
+fn cons_list_is_persistent() {
+    let a = cons(1, cons(2, empty_list()))
+    let b = cons(0, a)
+    assert first(a) == Some(1)
+    assert first(b) == Some(0)
+    assert list_count(a) == 2
+    assert list_count(b) == 3
+    assert total_of(a, 0, |x: int, y: int| x + y) == 3
+}
+
+#[test]
+fn vector_trie_basics() {
+    let mut v = empty_vector<int>()
+    for i in 0..40 { v = vconj(v, i) }
+    assert vnth(v, 0) == Some(0)
+    assert vnth(v, 31) == Some(31)
+    assert vnth(v, 32) == Some(32)
+    assert vnth(v, 39) == Some(39)
+    assert vnth(v, 40) == None
+    assert total_of(v, 0, |x: int, y: int| x + y) == 780
+}
+
+#[test]
+fn hamt_map_basics() {
+    let mut m = empty_map<string, int>()
+    m = massoc(m, "a", 1)
+    m = massoc(m, "b", 2)
+    m = massoc(m, "a", 9)
+    assert mget(m, "a") == Some(9)
+    assert mget(m, "b") == Some(2)
+    assert mget(m, "c") == None
+    let m2 = mdissoc(m, "a")
+    assert mget(m2, "a") == None
+    assert mget(m, "a") == Some(9)  // original unchanged: persistence
+}
+
+#[test]
+fn set_wraps_map() {
+    let mut s = empty_set<int>()
+    s = sconj(s, 1)
+    s = sconj(s, 2)
+    assert scontains(s, 1)
+    assert scontains(s, 2)
+    assert !scontains(s, 3)
+    assert s.backing.n == 2
+}
+
+#[test]
+fn queue_two_list() {
+    let mut q = empty_queue<int>()
+    q = qconj(q, 1)
+    q = qconj(q, 2)
+    q = qconj(q, 3)
+    assert qpeek(q) == Some(1)
+    q = qpop(q)
+    assert qpeek(q) == Some(2)
+}
+
+#[test]
+fn one_transducer_over_five_collections() {
+    // The SAME stage pipeline consumes a vector, a list, a map and a set.
+    let stages = [Stage {
+        apply: |st: RState, x: int| (st, Some(x * 2), Reduced.Continue),
+    }]
+    let mut v = empty_vector<int>()
+    for i in 0..5 { v = vconj(v, i) }
+    let l = cons(0, cons(1, cons(2, cons(3, cons(4, empty_list())))))
+    let mut m = empty_map<string, int>()
+    m = massoc(m, "a", 1)
+    let string_stages = [Stage {
+        apply: |st: RState, k: string| (st, Some(k), Reduced.Continue),
+    }]
+    let mut s = empty_set<int>()
+    s = sconj(s, 1)
+
+    assert transduce_vec(v, stages, 0, |acc: int, x: int| acc + x) == 20
+    assert transduce_list(l, stages, 0, |acc: int, x: int| acc + x) == 20
+    assert transduce_map_keys(m, string_stages, 0, |acc: int, _k: string| acc + 1) == 1
+    // Interface method: reduce-kv traverses entries without tuple allocation.
+    assert m.reduce_kv(0, |acc: int, _k: string, val: int| acc + val) == 1
+    assert transduce_set(s, stages, 0, |acc: int, k: int| acc + k) == 2
+}
+
+#[test]
+fn into_materializes_pipeline() {
+    let stages = [Stage {
+        apply: |st: RState, x: int| {
+            if x > 2 { (st, None, Reduced.Continue) } else { (st, Some(x + 10), Reduced.Continue) }
+        },
+    }]
+    let out = into(stages, [0, 1, 2, 3, 4])
+    assert vnth(out, 0) == Some(10)
+    assert vnth(out, 1) == Some(11)
+    assert vnth(out, 2) == Some(12)
+    assert vnth(out, 3) == None
+}
