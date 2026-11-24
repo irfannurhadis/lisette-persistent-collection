@@ -55,6 +55,11 @@ lis add github.com/irfannurhadis/lisette-persistent-collection
 
 and import the package as `go:github.com/irfannurhadis/lisette-persistent-collection/collections`.
 
+From a Lisette consumer, call the Go-exported names (Lisette's snake_case
+becomes PascalCase in Go typedefs), e.g. `c.EmptySmap<int>()`,
+`c.Sassoc(m, "a", 1)`, `c.Sget(m, "a")`. Verified end-to-end with `lis add
+...@v0.1.1`, `import c "go:.../collections"`, and a running consumer binary.
+
 ## Usage
 
 ```sh
