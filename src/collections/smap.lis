@@ -1,7 +1,6 @@
 import "go:slices"
 
-// String-keyed persistent HAMT — the real 32-way hash trie used for the
-// planner's card index. Generic HashMap in persistent.lis stays the small-map
+// String-keyed persistent HAMT.  Generic HashMap in persistent.lis stays the small-map
 // API; this one has proper 5-bit partitions and collision buckets.
 
 pub const SMASK: int = 31
