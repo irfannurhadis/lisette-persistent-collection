@@ -1,3 +1,5 @@
-target/
+# Commit the emitted Go library (target/*.go + go.mod) so `lis add` works.
+# Ignore only compiler-local caches.
+target/.lisette/
 *.tmp
 .DS_Store

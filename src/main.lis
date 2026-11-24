@@ -1,5 +1,0 @@
-import "go:fmt"
-
-fn main() {
-    fmt.Println("lisette-persistent-collection — library; run `lis test`")
-}

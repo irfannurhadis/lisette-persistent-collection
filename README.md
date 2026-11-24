@@ -42,6 +42,19 @@ Files in `src/collections/`:
 - Set algebra
 - Map transforms
 
+## Publishing / consuming
+
+This is a **Lisette library project** (no `main.lis`). `lisette.toml` `name` is
+the Go module path `github.com/irfannurhadis/lisette-persistent-collection`.
+`lis build` emits the Go module into `target/` (committed here), so consumers
+can add it with:
+
+```sh
+lis add github.com/irfannurhadis/lisette-persistent-collection
+```
+
+and import the package as `go:github.com/irfannurhadis/lisette-persistent-collection/collections`.
+
 ## Usage
 
 ```sh
