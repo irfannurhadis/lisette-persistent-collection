@@ -1,3 +1,4 @@
+import "go:fmt"
 import "go:slices"
 
 // Layer 1 — persistent storage. Clojure-style structures, specialized by
@@ -35,9 +36,14 @@ pub fn rest<T>(xs: List<T>) -> List<T> {
 }
 
 pub fn list_count<T>(xs: List<T>) -> int {
-    match xs {
-        List.Empty => 0,
-        List.Cons { tail, .. } => 1 + list_count(tail.*),
+    // Iterative: no stack growth for long lists.
+    let mut n = 0
+    let mut cur = xs
+    loop {
+        match cur {
+            List.Empty => return n,
+            List.Cons { tail, .. } => { n += 1; cur = tail.* },
+        }
     }
 }
 
@@ -59,102 +65,42 @@ pub const BITS: int = 5
 pub const WIDTH: int = 32
 pub const MASK: int = 31
 
-pub struct VNode<T> {
-    // ArrayNode: 32 children, None for absent. Specialized by T at monomorph.
-    pub children: mut Slice<Option<Ref<VNode<T> > > >,
-    pub leaf: Slice<Option<T>>,
-}
-
+// Array-mapped vector: 32-element contiguous leaves (array-backed), compact
+// tail, structural sharing by copying only the chunk directory on growth.
+// nth is O(1); conj is amortized O(1); versions share leaf slices.
 pub struct Vector<T> {
     pub n: int,
-    pub shift: int,
-    pub root: Option<Ref<VNode<T>>>,
+    pub chunks: Slice<Slice<T>>,
     pub tail: Slice<T>,
 }
 
 pub fn empty_vector<T>() -> Vector<T> {
-    Vector { n: 0, shift: BITS, root: None, tail: Slice.new<T>() }
-}
-
-fn new_node<T>() -> mut VNode<T> {
-    let mut children = Slice.new<Option<Ref<VNode<T> > > >()
-    for _ in 0..WIDTH { children = children.append(None) }
-    VNode { children, leaf: Slice.new<Option<T>>() }
-}
-
-// Insert a full 32-element tail into the trie at level `level`.
-fn push_tail<T>(node: Option<Ref<VNode<T>>>, level: int, tail: Slice<T>, count: int) -> Ref<VNode<T>> {
-    let mut out = new_node<T>()
-    match node {
-        Some(r) => {
-            out.children = slices.Clone(r.*.children)
-            out.leaf = r.*.leaf
-        },
-        None => { let _ = 0 },
-    }
-    let idx = ((count - 1) >> level) & MASK
-    if level == BITS {
-        // Leaf level: the tail occupies one 32-slot leaf under child `idx`.
-        let mut leaf_node = new_node<T>()
-        let mut leaf = Slice.new<Option<T>>()
-        for x in tail { leaf = leaf.append(Some(x)) }
-        while leaf.length() < WIDTH { leaf = leaf.append(None) }
-        leaf_node.leaf = leaf
-        out.children[idx] = Some(&leaf_node)
-    } else {
-        let child = out.children[idx]
-        out.children[idx] = Some(push_tail(child, level - BITS, tail, count))
-    }
-    &out
+    Vector { n: 0, chunks: Slice.new<Slice<T>>(), tail: Slice.new<T>() }
 }
 
 pub fn vconj<T>(v: Vector<T>, x: T) -> Vector<T> {
-    if v.tail.length() < WIDTH {
-        let tail = v.tail.append(x)
-        return Vector { n: v.n + 1, shift: v.shift, root: v.root, tail }
-    }
-    // Tail is full: push it into the trie; new tail holds just x.
-    let full = v.tail
-    let new_root = match v.root {
-        None => {
-            let mut leaf_node = new_node<T>()
-            let mut leaf = Slice.new<Option<T>>()
-            for y in full { leaf = leaf.append(Some(y)) }
-            while leaf.length() < WIDTH { leaf = leaf.append(None) }
-            leaf_node.leaf = leaf
-            let mut root_node = new_node<T>()
-            root_node.children[0] = Some(&leaf_node)
-            Some(&root_node)
-        },
-        Some(r) => Some(push_tail(Some(r), v.shift, full, v.n + 1)),
-    }
-    Vector { n: v.n + 1, shift: v.shift, root: new_root, tail: [x] }
+    let tail = v.tail.append(x)
+    if tail.length() < WIDTH { return Vector { n: v.n + 1, chunks: v.chunks, tail } }
+    // Tail full: append it as a leaf; copy only the directory (structural share).
+    let mut chunks = Slice.new<Slice<T>>()
+    for c in v.chunks { chunks = chunks.append(c) }
+    chunks = chunks.append(tail)
+    Vector { n: v.n + 1, chunks, tail: Slice.new<T>() }
 }
 
 pub fn vto_slice<T>(v: Vector<T>) -> Slice<T> {
     let mut out = Slice.new<T>()
-    let mut i = 0
-    while i < v.n {
-        match vnth(v, i) { Some(x) => out = out.append(x), None => { let _ = 0 } }
-        i += 1
-    }
+    for c in v.chunks { for x in c { out = out.append(x) } }
+    for x in v.tail { out = out.append(x) }
     out
 }
 
 pub fn vnth<T>(v: Vector<T>, i: int) -> Option<T> {
     if i < 0 || i >= v.n { return None }
-    let tail_off = v.n - v.tail.length()
-    if i >= tail_off { return v.tail.get(i - tail_off) }
-    let mut node = v.root?
-    let mut level = v.shift
-    while level > BITS {
-        let idx = (i >> level) & MASK
-        node = node.children[idx]?
-        level -= BITS
-    }
-    // At leaf level: node.children[(i>>BITS)&31] is the 32-slot leaf holder.
-    let holder = node.children[(i >> BITS) & MASK]?.*
-    holder.leaf[i & MASK]
+    let chunk = i / WIDTH
+    let off = i % WIDTH
+    if chunk < v.chunks.length() { return v.chunks[chunk].get(off) }
+    v.tail.get(i - v.chunks.length() * WIDTH)
 }
 
 // ---------------------------------------------------------------------------
@@ -165,70 +111,135 @@ pub fn vnth<T>(v: Vector<T>, i: int) -> Option<T> {
 pub struct Entry<K, V> { pub key: K, pub value: V }
 
 pub struct HNode<K, V> {
-    pub children: mut Slice<Option<Ref<HNode<K, V> > > >,
-    pub buckets: Slice<Entry<K, V>>,
+    pub kids: mut Slice<Option<Ref<HNode<K, V> > > >,
+    pub bucket: Slice<Entry<K, V>>,
 }
 
 pub struct HashMap<K: Comparable, V> {
     pub n: int,
-    pub compact: Slice<Entry<K, V>>,
     pub root: Option<Ref<HNode<K, V>>>,
 }
 
+fn khash<K: Comparable>(k: K) -> uint64 {
+    let text = fmt.Sprint(k)
+    let mut h: uint64 = 14695981039346656037
+    for b in text.bytes() { h = (h ^ (b as uint64)) * 1099511628211 }
+    h
+}
+
+fn new_hnode<K: Comparable, V>() -> mut HNode<K, V> {
+    let mut kids = Slice.new<Option<Ref<HNode<K, V> > > >()
+    for _ in 0..32 { kids = kids.append(None) }
+    HNode { kids, bucket: Slice.new<Entry<K, V>>() }
+}
+
 pub fn empty_map<K: Comparable, V>() -> HashMap<K, V> {
-    HashMap { n: 0, compact: Slice.new<Entry<K, V>>(), root: None }
+    HashMap { n: 0, root: None }
 }
 
 pub fn mget<K: Comparable, V>(m: HashMap<K, V>, k: K) -> Option<V> {
-    for e in m.compact {
-        if e.key == k { return Some(e.value) }
+    match m.root {
+        None => None,
+        Some(r) => {
+            let h = khash(k)
+            let mut node = r
+            let mut shift = 0
+            loop {
+                for e in node.*.bucket { if e.key == k { return Some(e.value) } }
+                let idx = ((h >> shift) & 31) as int
+                match node.*.kids[idx] {
+                    Some(child) => { node = child; shift += 5 },
+                    None => return None,
+                }
+            }
+        },
     }
-    let mut node = m.root?
-    loop {
-        for e in node.buckets {
-            if e.key == k { return Some(e.value) }
-        }
-        // Hash-less traversal: 32-way children visited structurally.
-        let mut next: Option<Ref<HNode<K, V>>> = None
-        for c in node.children {
-            if c.is_some() { next = c; break }
-        }
-        match next { Some(n) => node = n, None => return None }
+}
+
+fn hput<K: Comparable, V>(node: mut Ref<HNode<K, V>>, k: K, v: V, h: uint64, shift: int) -> bool {
+    let mut found = false
+    let mut bucket = Slice.new<Entry<K, V>>()
+    for e in node.*.bucket {
+        if e.key == k { bucket = bucket.append(Entry { key: k, value: v }); found = true }
+        else { bucket = bucket.append(e) }
     }
+    if found { node.bucket = bucket; return false }
+    let idx = ((h >> shift) & 31) as int
+    node.*.kids[idx].map_or_else(
+        || {
+            let mut leaf = new_hnode<K, V>()
+            leaf.bucket = leaf.bucket.append(Entry { key: k, value: v })
+            node.kids[idx] = Some(&leaf)
+            false
+        },
+        |child| {
+            let mut next = new_hnode<K, V>()
+            next.kids = slices.Clone(child.*.kids)
+            next.bucket = child.*.bucket
+            let replaced = hput(&next, k, v, h, shift + 5)
+            node.kids[idx] = Some(&next)
+            replaced
+        },
+    )
 }
 
 pub fn massoc<K: Comparable, V>(m: HashMap<K, V>, k: K, v: V) -> HashMap<K, V> {
-    if m.n <= 8 {
-        let mut compact = Slice.new<Entry<K, V>>()
-        let mut found = false
-        for e in m.compact {
-            if e.key == k { compact = compact.append(Entry { key: k, value: v }); found = true }
-            else { compact = compact.append(e) }
-        }
-        if found { return HashMap { n: m.n, compact, root: m.root } }
-        if m.n < 8 { compact = compact.append(Entry { key: k, value: v }); return HashMap { n: m.n + 1, compact, root: m.root } }
-        // overflow -> promote to HAMT (bucket 0)
+    m.root.map_or_else(
+        || {
+            let mut node = new_hnode<K, V>()
+            node.bucket = node.bucket.append(Entry { key: k, value: v })
+            HashMap { n: m.n + 1, root: Some(&node) }
+        },
+        |r| {
+            let mut out = new_hnode<K, V>()
+            out.kids = slices.Clone(r.*.kids)
+            out.bucket = r.*.bucket
+            let replaced = hput(&out, k, v, khash(k), 0)
+            let new_n = if replaced { m.n } else { m.n + 1 }
+            HashMap { n: new_n, root: Some(&out) }
+        },
+    )
+}
+
+fn hdel<K: Comparable, V>(node: mut Ref<HNode<K, V>>, k: K, h: uint64, shift: int) -> bool {
+    let mut found = false
+    let mut bucket = Slice.new<Entry<K, V>>()
+    for e in node.*.bucket {
+        if e.key == k { found = true } else { bucket = bucket.append(e) }
     }
-    let mut node: mut HNode<K, V> = HNode {
-        children: Slice.new<Option<Ref<HNode<K, V> > > >(),
-        buckets: Slice.new<Entry<K, V>>(),
-    }
-    match m.root {
-        Some(r) => { node.buckets = r.*.buckets },
-        None => { let _ = 0 },
-    }
-    node.buckets = node.buckets.append(Entry { key: k, value: v })
-    HashMap { n: m.n + 1, compact: m.compact, root: Some(&node) }
+    if found { node.bucket = bucket; return true }
+    let idx = ((h >> shift) & 31) as int
+    node.*.kids[idx].map_or(false, |child| {
+        let mut next = new_hnode<K, V>()
+        next.kids = slices.Clone(child.*.kids)
+        next.bucket = child.*.bucket
+        let removed = hdel(&next, k, h, shift + 5)
+        node.kids[idx] = Some(&next)
+        removed
+    })
 }
 
 pub fn mdissoc<K: Comparable, V>(m: HashMap<K, V>, k: K) -> HashMap<K, V> {
-    let mut compact = Slice.new<Entry<K, V>>()
-    let mut removed = false
-    for e in m.compact {
-        if e.key == k { removed = true } else { compact = compact.append(e) }
+    m.root.map_or(m, |r| {
+        let mut out = new_hnode<K, V>()
+        out.kids = slices.Clone(r.*.kids)
+        out.bucket = r.*.bucket
+        if hdel(&out, k, khash(k), 0) { HashMap { n: m.n - 1, root: Some(&out) } } else { m }
+    })
+}
+
+// Direct entry traversal: no tuple sequence allocated (reduce-kv lesson).
+fn walk_entries<K: Comparable, V>(node: Ref<HNode<K, V>>, out: Slice<Entry<K, V>>) -> Slice<Entry<K, V>> {
+    let mut acc = out
+    for e in node.*.bucket { acc = acc.append(e) }
+    for child in node.*.kids {
+        match child { Some(c) => acc = walk_entries(c, acc), None => { let _ = 0 } }
     }
-    if removed { return HashMap { n: m.n - 1, compact, root: m.root } }
-    m
+    acc
+}
+
+pub fn entries<K: Comparable, V>(m: HashMap<K, V>) -> Slice<Entry<K, V>> {
+    m.root.map_or_else(|| Slice.new<Entry<K, V>>(), |r| walk_entries(r, Slice.new<Entry<K, V>>()))
 }
 
 // ---------------------------------------------------------------------------
@@ -261,10 +272,19 @@ pub fn empty_queue<T>() -> Queue<T> {
     Queue { front: empty_list<T>(), rear: empty_list<T>() }
 }
 
+// Reverse the rear linked list directly in place of a slice round-trip:
+// O(n) with no intermediate collection; amortized O(1) per queue op.
+fn reverse_list<T>(xs: List<T>, acc: List<T>) -> List<T> {
+    match xs {
+        List.Empty => acc,
+        List.Cons { head, tail } => reverse_list(tail.*, cons(head, acc)),
+    }
+}
+
 fn normalize<T>(q: Queue<T>) -> Queue<T> {
     match first(q.front) {
         Some(_) => q,
-        None => Queue { front: from_slice(reverse_slice(to_slice(q.rear))), rear: empty_list<T>() },
+        None => Queue { front: reverse_list(q.rear, empty_list<T>()), rear: empty_list<T>() },
     }
 }
 
@@ -276,20 +296,3 @@ pub fn qpeek<T>(q: Queue<T>) -> Option<T> { first(q.front) }
 
 pub fn qpop<T>(q: Queue<T>) -> Queue<T> { normalize(Queue { front: rest(q.front), rear: q.rear }) }
 
-fn reverse_slice<T>(xs: Slice<T>) -> Slice<T> {
-    let mut out = Slice.new<T>()
-    let mut i = xs.length() - 1
-    while i >= 0 { out = out.append(xs[i]); i -= 1 }
-    out
-}
-
-fn to_slice<T>(xs: List<T>) -> Slice<T> {
-    let mut out = Slice.new<T>()
-    let mut cur = xs
-    loop {
-        match cur {
-            List.Empty => return out,
-            List.Cons { head, tail } => { out = out.append(head); cur = tail.* },
-        }
-    }
-}

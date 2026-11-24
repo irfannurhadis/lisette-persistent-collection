@@ -1,0 +1,71 @@
+import "go:slices"
+
+// P0 regression tests from the engineering review.
+
+#[test]
+fn hamt_large_map_crosses_hash_partitions() {
+    let mut m = empty_map<int, int>()
+    for i in 0..200 { m = massoc(m, i, i * 10) }
+    assert m.n == 200
+    for i in 0..200 {
+        assert mget(m, i) == Some(i * 10)
+    }
+    let updated = massoc(m, 7, 999)
+    assert mget(updated, 7) == Some(999)
+    assert mget(m, 7) == Some(70)       // structural persistence
+    let removed = mdissoc(m, 7)
+    assert mget(removed, 7) == None
+    assert mget(m, 7) == Some(70)
+    assert entries(m).length() == 200
+}
+
+#[test]
+fn vector_boundary_31_32_33() {
+    let mut v = empty_vector<int>()
+    for i in 0..33 { v = vconj(v, i) }
+    assert vnth(v, 30) == Some(30)
+    assert vnth(v, 31) == Some(31)
+    assert vnth(v, 32) == Some(32)
+    assert vnth(v, 33) == None
+}
+
+#[test]
+fn vector_boundary_1023_1024_1025() {
+    let mut v = empty_vector<int>()
+    for i in 0..1025 { v = vconj(v, i) }
+    assert vnth(v, 1022) == Some(1022)
+    assert vnth(v, 1023) == Some(1023)
+    assert vnth(v, 1024) == Some(1024)
+    assert vnth(v, 1025) == None
+}
+
+#[test]
+fn vector_versions_are_independent() {
+    let mut base = empty_vector<int>()
+    for i in 0..40 { base = vconj(base, i) }
+    let a = vconj(base, 100)
+    let b = vconj(base, 200)
+    assert vnth(a, 0) == Some(0)
+    assert vnth(a, 40) == Some(100)
+    assert vnth(b, 40) == Some(200)
+    assert vnth(base, 40) == None
+    assert vnth(base, 0) == Some(0)
+}
+
+#[test]
+fn take_stops_immediately_after_nth() {
+    // take(2) must not pull a third element: an effect counter would see only 2.
+    let stages = [Stage {
+        apply: |st: RState, x: int| (st, Some(x), Reduced.Continue),
+    }]
+    let pipeline = compose(take(2), Pipeline { stages })
+    let out = run(pipeline, [1, 2, 3, 4])
+    assert slices.Equal(out, [1, 2])
+}
+
+#[test]
+fn list_count_iterative_long() {
+    let mut xs = empty_list<int>()
+    for i in 0..5000 { xs = cons(i, xs) }
+    assert list_count(xs) == 5000
+}

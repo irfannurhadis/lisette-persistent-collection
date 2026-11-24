@@ -65,13 +65,13 @@ impl<K: Comparable, V> HashMap<K, V> {
     fn empty(self) -> bool { self.n == 0 }
     fn reduce_kv(self, zero: V, f: fn(V, K, V) -> V) -> V {
         let mut acc = zero
-        for e in self.compact { acc = f(acc, e.key, e.value) }
+        for e in entries(self) { acc = f(acc, e.key, e.value) }
         acc
     }
     // Values-only reduction for the Collection surface.
     fn reduce(self, zero: V, f: fn(V, V) -> V) -> V {
         let mut acc = zero
-        for e in self.compact { acc = f(acc, e.value) }
+        for e in entries(self) { acc = f(acc, e.value) }
         acc
     }
 }
@@ -81,7 +81,7 @@ impl<K: Comparable> HashSet<K> {
     fn empty(self) -> bool { self.backing.n == 0 }
     fn reduce(self, zero: K, f: fn(K, K) -> K) -> K {
         let mut acc = zero
-        for e in self.backing.compact { acc = f(acc, e.key) }
+        for e in entries(self.backing) { acc = f(acc, e.key) }
         acc
     }
 }
@@ -156,7 +156,7 @@ pub fn transduce_map_keys<K: Comparable, R>(m: HashMap<K, R>, stages: Slice<Stag
     // reduce-kv: traverse entries directly, no tuple sequence allocation.
     let mut acc = zero
     let mut st = fresh_state()
-    for e in m.compact {
+    for e in entries(m) {
         if st.stopped { break }
         let mut value: Option<K> = Some(e.key)
         for stage in stages {
@@ -175,7 +175,7 @@ pub fn transduce_set<K: Comparable, R>(s: HashSet<K>, stages: Slice<Stage<K>>, z
     // Set reuses the map's backing entries; no second hash implementation.
     let mut acc = zero
     let mut st = fresh_state()
-    for e in s.backing.compact {
+    for e in entries(s.backing) {
         if st.stopped { break }
         let mut value: Option<K> = Some(e.key)
         for stage in stages {

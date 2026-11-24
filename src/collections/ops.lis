@@ -8,13 +8,13 @@ import "go:slices"
 
 pub fn sunion<K: Comparable>(a: HashSet<K>, b: HashSet<K>) -> HashSet<K> {
     let mut out = a
-    for e in b.backing.compact { out = sconj(out, e.key) }
+    for e in entries(b.backing) { out = sconj(out, e.key) }
     out
 }
 
 pub fn sintersection<K: Comparable>(a: HashSet<K>, b: HashSet<K>) -> HashSet<K> {
     let mut out = empty_set<K>()
-    for e in a.backing.compact {
+    for e in entries(a.backing) {
         if scontains(b, e.key) { out = sconj(out, e.key) }
     }
     out
@@ -22,7 +22,7 @@ pub fn sintersection<K: Comparable>(a: HashSet<K>, b: HashSet<K>) -> HashSet<K> 
 
 pub fn sdifference<K: Comparable>(a: HashSet<K>, b: HashSet<K>) -> HashSet<K> {
     let mut out = empty_set<K>()
-    for e in a.backing.compact {
+    for e in entries(a.backing) {
         if !scontains(b, e.key) { out = sconj(out, e.key) }
     }
     out
@@ -35,7 +35,7 @@ pub fn sdifference<K: Comparable>(a: HashSet<K>, b: HashSet<K>) -> HashSet<K> {
 // has no key (structural sharing on a's side).
 pub fn mmerge<K: Comparable, V>(a: HashMap<K, V>, b: HashMap<K, V>) -> HashMap<K, V> {
     let mut out = a
-    for e in b.compact { out = massoc(out, e.key, e.value) }
+    for e in entries(b) { out = massoc(out, e.key, e.value) }
     out
 }
 
@@ -43,25 +43,25 @@ pub fn mmerge<K: Comparable, V>(a: HashMap<K, V>, b: HashMap<K, V>) -> HashMap<K
 
 pub fn map_keys<K: Comparable, V>(m: HashMap<K, V>, f: fn(K) -> K) -> HashMap<K, V> {
     let mut out = empty_map<K, V>()
-    for e in m.compact { out = massoc(out, f(e.key), e.value) }
+    for e in entries(m) { out = massoc(out, f(e.key), e.value) }
     out
 }
 
 pub fn map_values<K: Comparable, V>(m: HashMap<K, V>, f: fn(V) -> V) -> HashMap<K, V> {
     let mut out = empty_map<K, V>()
-    for e in m.compact { out = massoc(out, e.key, f(e.value)) }
+    for e in entries(m) { out = massoc(out, e.key, f(e.value)) }
     out
 }
 
 pub fn filter_keys<K: Comparable, V>(m: HashMap<K, V>, p: fn(K) -> bool) -> HashMap<K, V> {
     let mut out = empty_map<K, V>()
-    for e in m.compact { if p(e.key) { out = massoc(out, e.key, e.value) } }
+    for e in entries(m) { if p(e.key) { out = massoc(out, e.key, e.value) } }
     out
 }
 
 pub fn filter_values<K: Comparable, V>(m: HashMap<K, V>, p: fn(V) -> bool) -> HashMap<K, V> {
     let mut out = empty_map<K, V>()
-    for e in m.compact { if p(e.value) { out = massoc(out, e.key, e.value) } }
+    for e in entries(m) { if p(e.value) { out = massoc(out, e.key, e.value) } }
     out
 }
 

@@ -42,6 +42,20 @@ Files in `src/collections/`:
 - Set algebra
 - Map transforms
 
+## v0.1.2 fixes (engineering review)
+
+- `HashMap` is now a real HAMT: FNV-1a hash over `fmt.Sprint(key)`, 5-bit
+  partitions, 32-way children, path-copying assoc/dissoc, hash-based get,
+  direct entry traversal (`entries`) with no tuple sequence.
+- Vector rewritten as array-mapped 32-element leaves + compact tail; nth O(1),
+  versions share leaf slices. Boundaries 31/32/33, 1023/1024/1025 tested.
+- Queue `normalize` reverses the rear linked list directly (no slice round-trip).
+- `list_count` is iterative; no stack growth on long lists.
+- `take(n)` now signals `Reduced.Stop` on the nth element itself (no extra
+  upstream pull — observable for effectful stages).
+- Regression suite: 27 tests, including large HAMT, vector height boundaries,
+  version independence, take semantics, 5000-element list.
+
 ## Publishing / consuming
 
 This is a **Lisette library project** (no `main.lis`). `lisette.toml` `name` is
