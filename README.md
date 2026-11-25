@@ -91,6 +91,22 @@ becomes PascalCase in Go typedefs), e.g. `c.EmptySmap<int>()`,
 `c.Sassoc(m, "a", 1)`, `c.Sget(m, "a")`. Verified end-to-end with `lis add
 ...@v0.1.1`, `import c "go:.../collections"`, and a running consumer binary.
 
+## Known Lisette consumer issue (bindgen `mut` field)
+
+When consumed via `lis add github.com/irfannurhadis/lisette-persistent-collection`,
+Lisette 0.13.1 bindgen generates a typedef with
+`pub struct HashSet<T> { pub Backing: mut HashMap<T, UnitVal> }`, which fails
+typechecking with `mut has no effect` in every consumer — even one that never
+uses `HashSet`. The Go source itself has no `mut` field; this is a bindgen
+quirk, not a library defect.
+
+**Workaround:** vendor the `.lis` sources (e.g. a git submodule) into your
+application's `src/collections/` and import them as a local package
+(`import c "collections"`) instead of using the Go module path. This is how
+the N3 sidecar consumes the library. Until bindgen is fixed upstream, prefer
+this path for Lisette-to-Lisette consumption; the published Go module remains
+usable by ordinary Go programs.
+
 ## Usage
 
 ```sh
