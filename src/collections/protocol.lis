@@ -90,8 +90,25 @@ impl<T> Queue<T> {
     fn count(self) -> int { list_count(self.front) + list_count(self.rear) }
     fn empty(self) -> bool { first(self.front).is_none() }
     fn reduce(self, zero: T, f: fn(T, T) -> T) -> T {
+        // Logical order is front ++ reverse(rear): reduction must see the
+        // queued elements too, not just front.
         let mut acc = zero
         let mut cur = self.front
+        loop {
+            match cur {
+                List.Empty => break,
+                List.Cons { head, tail } => { acc = f(acc, head); cur = tail.* },
+            }
+        }
+        let mut rear_rev = empty_list<T>()
+        cur = self.rear
+        loop {
+            match cur {
+                List.Empty => break,
+                List.Cons { head, tail } => { rear_rev = cons(head, rear_rev); cur = tail.* },
+            }
+        }
+        cur = rear_rev
         loop {
             match cur {
                 List.Empty => break,

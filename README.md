@@ -42,6 +42,19 @@ Files in `src/collections/`:
 - Set algebra
 - Map transforms
 
+## v0.1.4 work (branch `v0.1.4-correctness`)
+
+- Queue `reduce` now traverses `front ++ reverse(rear)` (logical order).
+- `reverse_list` is iterative; no stack growth on large queues.
+- `take(0)` and negatives emit nothing; positive n stops on the nth element.
+- Generic HAMT adds a hash policy (`empty_map_with`) and a collision-depth cap.
+- `SMap` transduction is direct: one trie traversal with shared reducer state,
+  no intermediate key slice; `Stop` ends the outer traversal.
+- `from_entries` is honest batched `sassoc`, not a leaf-packing bulk load.
+- Vector is documented as array-mapped with O(n/32) directory copy at chunk
+  boundaries; a hybrid small/trie variant is modelled in Quint
+  (`n3examrapid/model/hybridVector.qnt`) but NOT yet implemented here.
+
 ## v0.1.3 fixes (engineering review)
 
 - `HashMap` is now a real HAMT: FNV-1a hash over `fmt.Sprint(key)`, 5-bit
@@ -77,6 +90,22 @@ From a Lisette consumer, call the Go-exported names (Lisette's snake_case
 becomes PascalCase in Go typedefs), e.g. `c.EmptySmap<int>()`,
 `c.Sassoc(m, "a", 1)`, `c.Sget(m, "a")`. Verified end-to-end with `lis add
 ...@v0.1.1`, `import c "go:.../collections"`, and a running consumer binary.
+
+## Known Lisette consumer issue (bindgen `mut` field)
+
+When consumed via `lis add github.com/irfannurhadis/lisette-persistent-collection`,
+Lisette 0.13.1 bindgen generates a typedef with
+`pub struct HashSet<T> { pub Backing: mut HashMap<T, UnitVal> }`, which fails
+typechecking with `mut has no effect` in every consumer — even one that never
+uses `HashSet`. The Go source itself has no `mut` field; this is a bindgen
+quirk, not a library defect.
+
+**Workaround:** vendor the `.lis` sources (e.g. a git submodule) into your
+application's `src/collections/` and import them as a local package
+(`import c "collections"`) instead of using the Go module path. This is how
+the N3 sidecar consumes the library. Until bindgen is fixed upstream, prefer
+this path for Lisette-to-Lisette consumption; the published Go module remains
+usable by ordinary Go programs.
 
 ## Usage
 

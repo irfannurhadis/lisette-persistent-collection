@@ -78,8 +78,10 @@ pub fn take<A>(n: int) -> Pipeline<A> {
     Pipeline {
         stages: [Stage {
             apply: |st: RState, a: A| {
-                // Emit the nth element AND signal Stop in the same step: no
-                // extra upstream element is pulled after the limit is reached.
+                // take(0) and negatives emit nothing. For n > 0, emit the nth
+                // element AND signal Stop in the same step: no extra upstream
+                // element is pulled after the limit is reached.
+                if n <= 0 { return (RState { stopped: true, ..st }, None, Reduced.Stop) }
                 let next_taken = st.taken + 1
                 if next_taken >= n {
                     (RState { taken: next_taken, stopped: true, ..st }, Some(a), Reduced.Stop)
