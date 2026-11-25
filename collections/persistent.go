@@ -172,6 +172,7 @@ type HNode[K any, V any] struct {
 type HashMap[K comparable, V any] struct {
 	N    int
 	Root lisette.Option[*HNode[K, V]]
+	Hash func(K) uint64
 }
 
 func khash[K comparable](k K) uint64 {
@@ -196,7 +197,17 @@ func newHnode[K comparable, V any]() HNode[K, V] {
 }
 
 func EmptyMap[K comparable, V any]() HashMap[K, V] {
-	return HashMap[K, V]{N: 0}
+	return HashMap[K, V]{
+		N:    0,
+		Hash: khash[K],
+	}
+}
+
+func EmptyMapWith[K comparable, V any](hash func(K) uint64) HashMap[K, V] {
+	return HashMap[K, V]{
+		N:    0,
+		Hash: hash,
+	}
 }
 
 func Mget[K comparable, V any](m HashMap[K, V], k K) (V, bool) {
@@ -205,7 +216,7 @@ func Mget[K comparable, V any](m HashMap[K, V], k K) (V, bool) {
 		return zero, false
 	}
 	r := m.Root.SomeVal
-	h := khash(k)
+	h := m.Hash(k)
 	node := r
 	shift := 0
 	for {
@@ -272,6 +283,7 @@ func Massoc[K comparable, V any](m HashMap[K, V], k K, v V) HashMap[K, V] {
 		return HashMap[K, V]{
 			N:    m.N + 1,
 			Root: lisette.MakeOptionSome(&node),
+			Hash: m.Hash,
 		}
 	}, func(r *HNode[K, V]) HashMap[K, V] {
 		out := newHnode[K, V]()
@@ -288,6 +300,7 @@ func Massoc[K comparable, V any](m HashMap[K, V], k K, v V) HashMap[K, V] {
 		return HashMap[K, V]{
 			N:    newN,
 			Root: lisette.MakeOptionSome(&out),
+			Hash: m.Hash,
 		}
 	})
 }
@@ -327,6 +340,7 @@ func Mdissoc[K comparable, V any](m HashMap[K, V], k K) HashMap[K, V] {
 			return HashMap[K, V]{
 				N:    m.N - 1,
 				Root: lisette.MakeOptionSome(&out),
+				Hash: m.Hash,
 			}
 		}
 		return m
@@ -394,11 +408,16 @@ func EmptyQueue[T any]() Queue[T] {
 }
 
 func reverseList[T any](xs, acc List[T]) List[T] {
-	if xs.Tag == ListEmpty {
-		return acc
+	out := acc
+	cur := xs
+	for {
+		if cur.Tag == ListEmpty {
+			return out
+		}
+		tail := cur.Tail
+		out = Cons(cur.Head, out)
+		cur = *tail
 	}
-	arg := *xs.Tail
-	return reverseList(arg, Cons(xs.Head, acc))
 }
 
 func normalize[T any](q Queue[T]) Queue[T] {

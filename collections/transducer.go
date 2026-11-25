@@ -74,12 +74,17 @@ func Filter[A any](p func(A) bool) Pipeline[A] {
 
 func Take[A any](n int) Pipeline[A] {
 	return Pipeline[A]{Stages: []Stage[A]{{Apply: func(st RState, a A) lisette.Tuple3[RState, lisette.Option[A], Reduced] {
+		if n <= 0 {
+			copy2 := st
+			copy2.Stopped = true
+			return lisette.MakeTuple3[RState, lisette.Option[A], Reduced](copy2, lisette.MakeOptionNone[A](), MakeReducedStop())
+		}
 		nextTaken := st.Taken + 1
 		if nextTaken >= n {
-			copy2 := st
-			copy2.Taken = nextTaken
-			copy2.Stopped = true
-			return lisette.MakeTuple3[RState, lisette.Option[A], Reduced](copy2, lisette.MakeOptionSome(a), MakeReducedStop())
+			copy3 := st
+			copy3.Taken = nextTaken
+			copy3.Stopped = true
+			return lisette.MakeTuple3[RState, lisette.Option[A], Reduced](copy3, lisette.MakeOptionSome(a), MakeReducedStop())
 		}
 		st.Taken = nextTaken
 		return lisette.MakeTuple3[RState, lisette.Option[A], Reduced](st, lisette.MakeOptionSome(a), MakeReducedContinue())

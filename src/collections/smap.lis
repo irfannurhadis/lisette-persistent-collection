@@ -112,17 +112,22 @@ pub fn scount<V>(m: SMap<V>) -> int { m.n }
 // Walk the trie's leaves, passing each (key,value) straight to the reducer —
 // no tuple sequence is materialized (the reduce-kv lesson from the B+tree
 // article). This is the SMap's traversal half of the collection protocol.
-fn visit_kv<V, R>(node: Ref<SNode<V>>, acc: R, f: fn(R, string, V) -> R) -> R {
-    let mut out = acc
-    for (k, v) in node.*.bucket { out = f(out, k, v) }
-    for child in node.*.kids {
-        match child { Some(c) => out = visit_kv(c, out, f), None => { let _ = 0 } }
-    }
-    out
-}
-
 pub fn reduce_kv<V, R>(m: SMap<V>, zero: R, f: fn(R, string, V) -> R) -> R {
-    m.root.map_or(zero, |r| visit_kv(r, zero, f))
+    // Iterative trie walk (stack of nodes); no named recursive generic helper —
+    // Lisette 0.13.1 fails to emit the helper definition in Go for that shape.
+    let mut acc = zero
+    let mut stack: mut Slice<Ref<SNode<V>>> = Slice.new<Ref<SNode<V>>>()
+    match m.root { Some(r) => stack = stack.append(r), None => return acc }
+    while stack.length() > 0 {
+        let node = stack[stack.length() - 1]
+        // pop without slice.pop: rebuild prefix using slices.Delete
+        stack = slices.Delete(stack, stack.length() - 1, stack.length())
+        for (k, v) in node.*.bucket { acc = f(acc, k, v) }
+        for child in node.*.kids {
+            match child { Some(c) => stack = stack.append(c), None => { let _ = 0 } }
+        }
+    }
+    acc
 }
 
 // Build an SMap from sorted (or already-ordered) entries via bulk load:

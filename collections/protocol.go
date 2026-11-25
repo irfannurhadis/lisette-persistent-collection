@@ -65,14 +65,6 @@ func (h HashMap[K, V]) Empty() bool {
 	return h.N == 0
 }
 
-func (h HashMap[K, V]) ReduceKv(zero V, f func(V, K, V) V) V {
-	acc := zero
-	for _, e := range Entries(h) {
-		acc = f(acc, e.Key, e.Value)
-	}
-	return acc
-}
-
 func (h HashMap[K, V]) Reduce(zero V, f func(V, V) V) V {
 	acc := zero
 	for _, e := range Entries(h) {
@@ -100,6 +92,25 @@ func (h HashSet[K]) Reduce(zero K, f func(K, K) K) K {
 func (q Queue[T]) Reduce(zero T, f func(T, T) T) T {
 	acc := zero
 	cur := q.Front
+	for {
+		if cur.Tag == ListEmpty {
+			break
+		}
+		tail := cur.Tail
+		acc = f(acc, cur.Head)
+		cur = *tail
+	}
+	rearRev := EmptyList[T]()
+	cur = q.Rear
+	for {
+		if cur.Tag == ListEmpty {
+			break
+		}
+		tail := cur.Tail
+		rearRev = Cons(cur.Head, rearRev)
+		cur = *tail
+	}
+	cur = rearRev
 	for {
 		if cur.Tag == ListEmpty {
 			break

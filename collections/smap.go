@@ -138,25 +138,28 @@ func Scount[V any](m SMap[V]) int {
 	return m.N
 }
 
-func visitKv[V any, R any](node *SNode[V], acc R, f func(R, string, V) R) R {
-	out := acc
-	for _, item := range node.Bucket {
-		k := item.First
-		v := item.Second
-		out = f(out, k, v)
+func ReduceKv[V any, R any](m SMap[V], zero R, f func(R, string, V) R) R {
+	acc := zero
+	stack := []*SNode[V]{}
+	if m.Root.Tag == lisette.OptionNone {
+		return acc
 	}
-	for _, child := range node.Kids {
-		if child.Tag == lisette.OptionSome {
-			out = visitKv(child.SomeVal, out, f)
+	stack = append(stack, m.Root.SomeVal)
+	for len(stack) > 0 {
+		node := stack[len(stack)-1]
+		stack = slices.Delete(stack, len(stack)-1, len(stack))
+		for _, item := range node.Bucket {
+			k := item.First
+			v := item.Second
+			acc = f(acc, k, v)
+		}
+		for _, child := range node.Kids {
+			if child.Tag == lisette.OptionSome {
+				stack = append(stack, child.SomeVal)
+			}
 		}
 	}
-	return out
-}
-
-func ReduceKv[V any, R any](m SMap[V], zero R, f func(R, string, V) R) R {
-	return lisette.OptionMapOr(m.Root, zero, func(r *SNode[V]) R {
-		return visitKv(r, zero, f)
-	})
+	return acc
 }
 
 func FromEntries[V any](entries []lisette.Tuple2[string, V]) SMap[V] {
@@ -167,37 +170,66 @@ func FromEntries[V any](entries []lisette.Tuple2[string, V]) SMap[V] {
 	return m
 }
 
-func TransduceKeys[V any](m SMap[V], stages []Stage[string], zero int, f func(int, string) int) int {
-	keys := ReduceKv(m, []string{}, func(acc []string, k string, _ V) []string {
-		return append(slices.Clip(acc), k)
-	})
-	acc := zero
-	st := FreshState()
-	for _, k := range keys {
-		if st.Stopped {
-			break
+type XAcc struct {
+	Acc    int
+	St     RState
+	Stages []Stage[string]
+	F      func(int, string) int
+}
+
+func visitKvFused[V any](node *SNode[V], xa *XAcc) {
+	if xa.St.Stopped {
+		return
+	}
+	for _, item := range node.Bucket {
+		k := item.First
+		if xa.St.Stopped {
+			return
 		}
 		value := lisette.MakeOptionSome(k)
-		for _, stage := range stages {
+		for _, stage := range xa.Stages {
 			if value.IsNone() {
 				break
 			}
-			tmp := stage.Apply(st, valueOf(value))
+			arg := xa.St
+			tmp := stage.Apply(arg, valueOf(value))
 			next := tmp.First
 			emitted := tmp.Second
 			flag := tmp.Third
-			st = next
+			xa.St = next
 			value = emitted
 			if flag == MakeReducedStop() {
-				copy2 := st
+				copy2 := xa.St
 				copy2.Stopped = true
-				st = copy2
+				xa.St = copy2
 				break
 			}
 		}
 		if !value.IsNone() {
-			acc = f(acc, valueOf(value))
+			callee := xa.F
+			arg2 := xa.Acc
+			xa.Acc = callee(arg2, valueOf(value))
 		}
 	}
-	return acc
+	for _, child := range node.Kids {
+		if xa.St.Stopped {
+			return
+		}
+		if child.Tag == lisette.OptionSome {
+			visitKvFused(child.SomeVal, xa)
+		}
+	}
+}
+
+func TransduceKeys[V any](m SMap[V], stages []Stage[string], zero int, f func(int, string) int) int {
+	xa := XAcc{
+		Acc:    zero,
+		St:     FreshState(),
+		Stages: stages,
+		F:      f,
+	}
+	if m.Root.Tag == lisette.OptionSome {
+		visitKvFused(m.Root.SomeVal, &xa)
+	}
+	return xa.Acc
 }
