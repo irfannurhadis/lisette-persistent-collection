@@ -98,3 +98,47 @@ fn vector_height_transition_32768() {
     assert vnth(v, 32768) == Some(32768)
     assert vnth(v, 32769) == None
 }
+
+#[test]
+fn queue_reduce_includes_rear() {
+    // Enqueue while front stays non-empty: reduce must see front ++ reverse(rear).
+    let mut q = empty_queue<int>()
+    q = qconj(q, 1)
+    q = qconj(q, 2)
+    q = qconj(q, 3)
+    assert q.reduce(0, |acc: int, x: int| acc + x) == 6
+    assert qpeek(q) == Some(1)
+}
+
+#[test]
+fn take_zero_emits_nothing() {
+    assert eq_slice(take_collect([1, 2, 3], 0), [])
+    assert eq_slice(take_collect([1, 2, 3], -1), [])
+    assert eq_slice(take_collect([1, 2, 3], 2), [1, 2])
+}
+
+#[test]
+fn smap_bulk_load_preserves_entries() {
+    let mut entries = Slice.new<(string, int)>()
+    for i in 0..100 { entries = entries.append((f"k{i}", i)) }
+    let m = from_entries(entries)
+    assert scount(m) == 100
+    for i in 0..100 { assert sget(m, f"k{i}") == Some(i) }
+}
+
+#[test]
+fn generic_map_with_custom_hash_policy() {
+    let m = empty_map_with<int, int>(|k: int| (k as uint64) * 2654435761)
+    let m2 = massoc(m, 42, 7)
+    assert mget(m2, 42) == Some(7)
+    assert mget(m2, 43) == None
+}
+
+#[test]
+fn direct_smap_transduction_no_intermediate() {
+    let mut m = empty_smap<int>()
+    for i in 0..50 { m = sassoc(m, f"k{i}", i) }
+    let stages = [Stage { apply: |st: RState, k: string| (st, Some(k), Reduced.Continue) }]
+    let pipeline = compose(take(3), Pipeline { stages })
+    assert transduce_keys(m, pipeline.stages, 0, |acc: int, _k: string| acc + 1) == 3
+}

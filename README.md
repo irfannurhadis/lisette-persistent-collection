@@ -42,6 +42,19 @@ Files in `src/collections/`:
 - Set algebra
 - Map transforms
 
+## v0.1.4 work (branch `v0.1.4-correctness`)
+
+- Queue `reduce` now traverses `front ++ reverse(rear)` (logical order).
+- `reverse_list` is iterative; no stack growth on large queues.
+- `take(0)` and negatives emit nothing; positive n stops on the nth element.
+- Generic HAMT adds a hash policy (`empty_map_with`) and a collision-depth cap.
+- `SMap` transduction is direct: one trie traversal with shared reducer state,
+  no intermediate key slice; `Stop` ends the outer traversal.
+- `from_entries` is honest batched `sassoc`, not a leaf-packing bulk load.
+- Vector is documented as array-mapped with O(n/32) directory copy at chunk
+  boundaries; a hybrid small/trie variant is modelled in Quint
+  (`n3examrapid/model/hybridVector.qnt`) but NOT yet implemented here.
+
 ## v0.1.3 fixes (engineering review)
 
 - `HashMap` is now a real HAMT: FNV-1a hash over `fmt.Sprint(key)`, 5-bit

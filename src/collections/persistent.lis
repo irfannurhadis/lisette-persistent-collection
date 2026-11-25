@@ -118,6 +118,9 @@ pub struct HNode<K, V> {
 pub struct HashMap<K: Comparable, V> {
     pub n: int,
     pub root: Option<Ref<HNode<K, V>>>,
+    // Hash policy: callers can supply a canonical/injective hash for their
+    // key type instead of the default fmt.Sprint-based one.
+    pub hash: fn(K) -> uint64,
 }
 
 fn khash<K: Comparable>(k: K) -> uint64 {
@@ -134,14 +137,18 @@ fn new_hnode<K: Comparable, V>() -> mut HNode<K, V> {
 }
 
 pub fn empty_map<K: Comparable, V>() -> HashMap<K, V> {
-    HashMap { n: 0, root: None }
+    HashMap { n: 0, root: None, hash: khash }
+}
+
+pub fn empty_map_with<K: Comparable, V>(hash: fn(K) -> uint64) -> HashMap<K, V> {
+    HashMap { n: 0, root: None, hash }
 }
 
 pub fn mget<K: Comparable, V>(m: HashMap<K, V>, k: K) -> Option<V> {
     match m.root {
         None => None,
         Some(r) => {
-            let h = khash(k)
+            let h = (m.hash)(k)
             let mut node = r
             let mut shift = 0
             loop {
@@ -188,7 +195,7 @@ pub fn massoc<K: Comparable, V>(m: HashMap<K, V>, k: K, v: V) -> HashMap<K, V> {
         || {
             let mut node = new_hnode<K, V>()
             node.bucket = node.bucket.append(Entry { key: k, value: v })
-            HashMap { n: m.n + 1, root: Some(&node) }
+            HashMap { n: m.n + 1, root: Some(&node), hash: m.hash }
         },
         |r| {
             let mut out = new_hnode<K, V>()
@@ -196,7 +203,7 @@ pub fn massoc<K: Comparable, V>(m: HashMap<K, V>, k: K, v: V) -> HashMap<K, V> {
             out.bucket = r.*.bucket
             let replaced = hput(&out, k, v, khash(k), 0)
             let new_n = if replaced { m.n } else { m.n + 1 }
-            HashMap { n: new_n, root: Some(&out) }
+            HashMap { n: new_n, root: Some(&out), hash: m.hash }
         },
     )
 }
@@ -224,7 +231,7 @@ pub fn mdissoc<K: Comparable, V>(m: HashMap<K, V>, k: K) -> HashMap<K, V> {
         let mut out = new_hnode<K, V>()
         out.kids = slices.Clone(r.*.kids)
         out.bucket = r.*.bucket
-        if hdel(&out, k, khash(k), 0) { HashMap { n: m.n - 1, root: Some(&out) } } else { m }
+        if hdel(&out, k, khash(k), 0) { HashMap { n: m.n - 1, root: Some(&out), hash: m.hash } } else { m }
     })
 }
 
@@ -275,9 +282,14 @@ pub fn empty_queue<T>() -> Queue<T> {
 // Reverse the rear linked list directly in place of a slice round-trip:
 // O(n) with no intermediate collection; amortized O(1) per queue op.
 fn reverse_list<T>(xs: List<T>, acc: List<T>) -> List<T> {
-    match xs {
-        List.Empty => acc,
-        List.Cons { head, tail } => reverse_list(tail.*, cons(head, acc)),
+    // Iterative: no stack growth for large queue reversal.
+    let mut out = acc
+    let mut cur = xs
+    loop {
+        match cur {
+            List.Empty => return out,
+            List.Cons { head, tail } => { out = cons(head, out); cur = tail.* },
+        }
     }
 }
 

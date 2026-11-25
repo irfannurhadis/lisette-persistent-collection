@@ -128,6 +128,9 @@ pub fn reduce_kv<V, R>(m: SMap<V>, zero: R, f: fn(R, string, V) -> R) -> R {
 // Build an SMap from sorted (or already-ordered) entries via bulk load:
 // fill leaves contiguously instead of one sassoc at a time (B+tree lesson).
 pub fn from_entries<V>(entries: Slice<(string, V)>) -> SMap<V> {
+    // Batched construction from entries. Each insertion is a path-copying
+    // HAMT assoc; this is NOT yet a leaf-packing bulk load (that requires a
+    // full trie builder). Repeated keys keep the last value.
     let mut m = empty_smap<V>()
     for e in entries { m = sassoc(m, e.0, e.1) }
     m
@@ -136,23 +139,37 @@ pub fn from_entries<V>(entries: Slice<(string, V)>) -> SMap<V> {
 // Transducer-backed key projection: the SAME stage pipeline used for vectors
 // and lists consumes string-keyed maps. Keys are gathered via reduce_kv and
 // transformed inline; result is the only allocated slice.
-pub fn transduce_keys<V>(m: SMap<V>, stages: Slice<Stage<string>>, zero: int, f: fn(int, string) -> int) -> int {
-    // Gather keys in one traversal (reduce_kv), then run ONE fused reducer loop
-    // with shared state: take(n) is a global limit and Stop ends the loop.
-    let keys = reduce_kv(m, Slice.new<string>(), |acc: Slice<string>, k: string, _v: V| acc.append(k))
-    let mut acc = zero
-    let mut st = fresh_state()
-    for k in keys {
-        if st.stopped { break }
+// Reducer accumulator carried through the trie walk: one traversal, no
+// intermediate key slice, and Stop terminates the outer traversal.
+pub struct XAcc {
+    pub acc: int,
+    pub st: RState,
+    pub stages: Slice<Stage<string>>,
+    pub f: fn(int, string) -> int,
+}
+
+fn visit_kv_fused<V>(node: Ref<SNode<V>>, xa: mut Ref<XAcc>) {
+    if xa.*.st.stopped { return }
+    for (k, _v) in node.*.bucket {
+        if xa.*.st.stopped { return }
         let mut value: Option<string> = Some(k)
-        for stage in stages {
+        for stage in xa.*.stages {
             if value.is_none() { break }
-            let (next, emitted, flag) = stage.apply(st, value_of(value))
-            st = next
+            let (next, emitted, flag) = stage.apply(xa.*.st, value_of(value))
+            xa.*.st = next
             value = emitted
-            if flag == Reduced.Stop { st = RState { stopped: true, ..st }; break }
+            if flag == Reduced.Stop { xa.*.st = RState { stopped: true, ..xa.*.st }; break }
         }
-        if !value.is_none() { acc = f(acc, value_of(value)) }
+        if !value.is_none() { xa.*.acc = (xa.*.f)(xa.*.acc, value_of(value)) }
     }
-    acc
+    for child in node.*.kids {
+        if xa.*.st.stopped { return }
+        match child { Some(c) => visit_kv_fused(c, xa), None => { let _ = 0 } }
+    }
+}
+
+pub fn transduce_keys<V>(m: SMap<V>, stages: Slice<Stage<string>>, zero: int, f: fn(int, string) -> int) -> int {
+    let mut xa = XAcc { acc: zero, st: fresh_state(), stages, f }
+    match m.root { Some(r) => visit_kv_fused(r, &xa), None => { let _ = 0 } }
+    xa.acc
 }
